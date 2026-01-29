@@ -1,0 +1,6 @@
+crewai
+google-generativeai
+pydantic
+chromadb
+PyPDF2
+python-dotenv
