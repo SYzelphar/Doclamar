@@ -77,8 +77,8 @@ def run():
     crew = create_crew()
 
     inputs = {
-        "query": "Summarize the contents of summarizer_tool.py",
-        "root_path": "C:\\Users\\Shlok\\Projects\\MAJORPROJECT\\doclamar\\tools",
+        "query": "Summarize the contents of Machine Learning.pdf",
+        "root_path": "C:\\Users",
         "file_types": ["pdf", "txt"]
     }
 

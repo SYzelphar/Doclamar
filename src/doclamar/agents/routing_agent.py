@@ -15,5 +15,6 @@ def create_routing_agent():
             QueryHintTool(),
             RoutingTool()
         ],
+        
         verbose=True,
     )

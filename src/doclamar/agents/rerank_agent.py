@@ -10,6 +10,7 @@ def create_rerank_agent():
             "You prioritize extracted document content using semantic similarity. "
             "You do not summarize or generate new information."
         ),
+        llm=None,
         tools=[ReRankTool()],
         verbose=True,
     )

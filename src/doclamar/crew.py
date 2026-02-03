@@ -131,6 +131,7 @@ def create_crew():
             summarization_task,
         ],
         verbose=True,
+        max_rpm=10
     )
 
     return crew

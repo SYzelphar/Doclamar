@@ -11,7 +11,7 @@ class RoutingTool(BaseTool):
 
     def _run(
         self,
-        root_path: str,
+        root_path= "C:\\Users",
         semantic_hints: Optional[List[str]] = None,
         allowed_extensions: Optional[List[str]] = None
     ) -> List[DocumentSchema]:

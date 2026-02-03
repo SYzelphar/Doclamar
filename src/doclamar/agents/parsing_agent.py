@@ -10,6 +10,7 @@ def create_parsing_agent():
             "You extract meaningful text from documents identified by the routing agent. "
             "You do not rank or summarize content."
         ),
+        llm=None,
         tools=[ParsingTool()],
         verbose=True,
     )
