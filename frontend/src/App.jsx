@@ -1,269 +1,322 @@
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
+import { api, isDesktop, storage } from './api'
 import Sidebar from './components/Sidebar'
 import ChatWindow from './components/ChatWindow'
 import QueryInput from './components/QueryInput'
-import Login from './components/Login'   // <-- Import new component
-import Home from './components/Home'     // <-- Import new component
+import Login from './components/Login'
+import Home from './components/Home'
+import SettingsModal from './components/SettingsModal'
 
-export const parseDBDate = (dateString) => {
-  if (!dateString) return new Date().toISOString();
-  // Replaces the space with a 'T' and appends 'Z' for UTC time
-  const safeDateString = dateString.replace(' ', 'T') + 'Z';
-  return new Date(safeDateString).toISOString();
-};
+const USER_KEY = 'doclamar_username'
+const VIEW_KEY = 'doclamar_view'
+const FOLDER_KEY = 'doclamar_folder'
+
+let nextId = 0
+const newId = () => `${Date.now()}-${nextId++}`
+
+function messagesFromHistory(rows) {
+  return rows.map((m) => ({
+    id: newId(),
+    role: m.role,
+    content: m.content,
+    citations: m.citations || [],
+    timestamp: m.created_at ? `${m.created_at.replace(' ', 'T')}Z` : null,
+  }))
+}
 
 function App() {
-  const savedName = localStorage.getItem('doclamar_username');
-  const savedView = localStorage.getItem('doclamar_view');
-  console.log("Memory Check on Refresh -> Name:", savedName, "| View:", savedView);
-  
-  // If there's a name, use the saved view (or default to 'home'). If no name, force 'login'.
-  const initialView = savedName ? (savedView || 'home') : 'login';
-  const [currentView, setCurrentView] = useState(initialView); // 'login', 'home', 'app'
+  // Read the saved name synchronously: the old app started with '' and lost
+  // the user's chat history on every restart.
+  const [username, setUsername] = useState(() => storage.get(USER_KEY) || '')
+  const [view, setView] = useState(() => {
+    if (!storage.get(USER_KEY)) return 'login'
+    return storage.get(VIEW_KEY) === 'app' ? 'app' : 'home'
+  })
+  const [health, setHealth] = useState(null)
+  const [showSettings, setShowSettings] = useState(false)
 
-  useEffect(() => {
-    // Whenever currentView changes, save it to memory
-    localStorage.setItem('doclamar_view', currentView);
-  }, [currentView]);
+  const [folder, setFolder] = useState(() => storage.get(FOLDER_KEY) || '')
+  const [indexStatus, setIndexStatus] = useState(null)
+  const [indexError, setIndexError] = useState(null)
+  const [session, setSession] = useState(null)
+  const [messages, setMessages] = useState([])
+  const [sessions, setSessions] = useState([])
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState(null)
 
-  const [username, setUsername] = useState('');
-  const [isBackendReady, setIsBackendReady] = useState(false);
-  const [directory, setDirectory] = useState('')
-  const [isProcessing, setIsProcessing] = useState(false)
-  const [conversations, setConversations] = useState([])
-  const [currentChatId, setCurrentChatId] = useState(null) // This will now store the SQLite session_id
+  const ready = health?.status === 'ready'
+  const pollTimer = useRef(null)
 
-  const [chatMode, setChatMode] = useState('directory'); 
-  const [activeFile, setActiveFile] = useState(null);
-  const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [sessionId, setSessionId] = useState(null);
+  useEffect(() => storage.set(USER_KEY, username), [username])
+  useEffect(() => storage.set(VIEW_KEY, view), [view])
+  useEffect(() => storage.set(FOLDER_KEY, folder), [folder])
 
-  useEffect(() => {
-    const checkHealth = async () => {
-      try {
-        const res = await fetch("http://127.0.0.1:8000/health");
-        if (res.ok) setIsBackendReady(true);
-      } catch (e) {
-        // Backend not ready yet, silently try again in 2 seconds
-        setTimeout(checkHealth, 2000);
-      }
-    };
-    checkHealth();
-  }, []);
-
-  // --- 1. LOAD CHAT FROM SQLITE ---
-  const handleLoadChat = async (sessionId) => {
-  try {
-    const response = await fetch(`http://127.0.0.1:8000/history/${sessionId}`);
-    const data = await response.json();
-    
-    const dbMessages = data.messages;
-    const pairedConversations = [];
-
-    // Using a for-loop instead of .map() to safely group pairs
-    for (let i = 0; i < dbMessages.length; i++) {
-      const msg = dbMessages[i]; // <-- msg is explicitly defined right here
-
-      if (msg.role === 'user') {
-        pairedConversations.push({
-          id: Date.now() + i,
-          user: { 
-            text: msg.content, 
-            sender: 'user', 
-            timestamp: parseDBDate(msg.created_at) 
-          },
-          assistant: null // Temporary placeholder until the AI response loops around
-        });
-      } else if (msg.role === 'ai' && pairedConversations.length > 0) {
-        // Attach the AI response to the last created user pair
-        pairedConversations[pairedConversations.length - 1].assistant = {
-          text: msg.content,
-          sender: 'assistant',
-          timestamp: parseDBDate(msg.created_at), 
-          citations: [] 
-        };
-      }
-    }
-    
-    setConversations(pairedConversations);
-    setCurrentChatId(sessionId);
-    setChatMode('directory'); 
-  } catch (err) {
-    console.error("Failed to load session content:", err);
-  }
-};
-
-  const handleChatWithFile = async (filePath, fileName) => {
+  // ------------------------------------------------------------ engine health
+  const refreshHealth = useCallback(async () => {
     try {
-      const response = await fetch("http://127.0.0.1:8000/chat/load", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ file_path: filePath })
-      });
-      
-      const data = await response.json();
-      
-      setSessionId(data.session_id);
-      setCurrentChatId(data.session_id); // Sync with sidebar
-      setActiveFile(fileName);
-      setChatMode('file');
-      
-      setConversations(prev => [...prev, {
-        id: Date.now(),
-        user: { text: `Focus on file: ${fileName}`, sender: 'system', timestamp: new Date().toISOString() },
-        assistant: { 
-          text: `**File Loaded:** I am now answering questions strictly based on the contents of **${fileName}**.`, 
-          citations: null, 
-          sender: 'assistant', 
-          timestamp: new Date().toISOString() 
-        }
-      }]);
-    } catch (error) {
-      console.error("Failed to load file:", error);
+      setHealth(await api('/health'))
+    } catch {
+      setHealth(null)
     }
-  };
+  }, [])
 
-  const handleReturnToDirectory = () => {
-    setChatMode('directory');
-    setActiveFile(null);
-    setSessionId(null);
-    setCurrentChatId(null);
-    setConversations(prev => [...prev, {
-      id: Date.now(),
-      user: { text: `Return to directory search`, sender: 'system', timestamp: new Date().toISOString() },
-      assistant: { text: `**Directory Mode:** I am now searching across all files in your selected folder again.`, citations: null, sender: 'assistant', timestamp: new Date().toISOString() }
-    }]);
-  };
+  useEffect(() => {
+    let cancelled = false
+    let timer
+    const tick = async () => {
+      await refreshHealth()
+      if (!cancelled) timer = setTimeout(tick, ready ? 15000 : 1500)
+    }
+    tick()
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [ready, refreshHealth])
 
-  const handleDirectorySubmit = (path) => {
-    setDirectory(path)
+  // ----------------------------------------------------------------- history
+  const refreshSessions = useCallback(async () => {
+    if (!username) return
+    try {
+      const data = await api('/sessions', { params: { username } })
+      setSessions(data.sessions)
+    } catch (e) {
+      setNotice(e.message)
+    }
+  }, [username])
+
+  useEffect(() => {
+    if (ready && username) refreshSessions()
+  }, [ready, username, refreshSessions])
+
+  // ---------------------------------------------------------------- indexing
+  const pollIndex = useCallback(async (path) => {
+    clearTimeout(pollTimer.current)
+    try {
+      const status = await api('/index/status', { params: { folder: path } })
+      setIndexStatus(status)
+      setIndexError(null)
+      const state = status.job?.state
+      if (state === 'queued' || state === 'scanning' || state === 'indexing') {
+        pollTimer.current = setTimeout(() => pollIndex(path), 800)
+      }
+    } catch (e) {
+      setIndexError(e.message)
+    }
+  }, [])
+
+  const syncFolder = useCallback(async (path) => {
+    if (!path) return
+    setIndexError(null)
+    try {
+      setIndexStatus(await api('/index', { method: 'POST', body: { folder: path } }))
+      pollIndex(path)
+    } catch (e) {
+      setIndexStatus(null)
+      setIndexError(e.message)
+    }
+  }, [pollIndex])
+
+  // Re-sync whenever the folder changes (and once the engine is up). Syncs are
+  // incremental, so this only re-reads files that changed since last time.
+  useEffect(() => {
+    if (ready && folder) syncFolder(folder)
+    return () => clearTimeout(pollTimer.current)
+  }, [ready, folder, syncFolder])
+
+  // ----------------------------------------------------------------- actions
+  const newChat = () => {
+    setSession(null)
+    setMessages([])
   }
 
-  const handleNewChat = () => {
-    setConversations([])
-    setCurrentChatId(null)
-    setSessionId(null)
-    // Keep the directory so the user doesn't have to re-select it
+  const selectFolder = (path) => {
+    if (!path) return
+    newChat()
+    setIndexStatus(null)
+    setFolder(path)
   }
 
-  const handleNewMessage = async (message) => {
-    if (!directory) {
-      alert('Please select a directory first')
+  const send = async (question) => {
+    if (busy) return
+    const inFileMode = session?.mode === 'file'
+    if (!inFileMode && !folder && !session?.folder) {
+      setNotice('Choose a folder of documents first.')
       return
     }
-
-    const tempId = Date.now();
-    // 👇 NEW: Decide the Session ID BEFORE calling the backend
-    const targetSessionId = currentChatId || `session_${tempId}`;
-
-    const newConversationPair = {
-      id: tempId,
-      user: { id: tempId + 1, text: message, sender: 'user', timestamp: new Date().toISOString() },
-      assistant: { text: "Thinking...", sender: 'assistant', timestamp: new Date().toISOString() }
-    };
-    
-    setConversations(prev => [...prev, newConversationPair]);
-
+    const pendingId = newId()
+    setMessages((m) => [
+      ...m,
+      { id: newId(), role: 'user', content: question, timestamp: new Date().toISOString() },
+      { id: pendingId, role: 'assistant', pending: true },
+    ])
+    setBusy(true)
     try {
-      let endpoint = "http://127.0.0.1:8000/chat";
-      let payload = { 
-        query: message, 
-        directory: directory,
-        username: username,
-        session_id: targetSessionId // <--- 👇 ADD IT TO THE PAYLOAD
-      };
-
-      if (chatMode === 'file' && sessionId) {
-        endpoint = "http://127.0.0.1:8000/chat/message";
-        payload = { message: message, session_id: sessionId, username: username };
-      }
-
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      if (!response.ok) throw new Error("Backend failed");
-      const data = await response.json();
-
-      // 👇 Update this block to use your targetSessionId
-      if (!currentChatId) {
-          setCurrentChatId(targetSessionId); 
-          setRefreshTrigger(prev => prev + 1);
-      }
-
-      setConversations(prev => prev.map(conv => {
-        if (conv.id === tempId) {
-          return {
-            ...conv,
-            assistant: {
-              text: data.response,
-              citations: data.citations,
-              sender: 'assistant',
-              timestamp: new Date().toISOString()
-            }
-          };
-        }
-        return conv;
-      }));
-    } catch (error) {
-      console.error("Error communicating with AI backend:", error);
+      const data = await api('/chat', {
+        method: 'POST',
+        body: {
+          question,
+          username,
+          session_id: session?.id ?? null,
+          folder: session?.folder || folder || null,
+        },
+      })
+      setMessages((m) => m.map((msg) => (msg.id === pendingId
+        ? { id: pendingId, role: 'assistant', content: data.answer, citations: data.citations,
+            status: data.status, timestamp: new Date().toISOString() }
+        : msg)))
+      if (!session) setSession({ id: data.session_id, mode: 'folder', folder, title: question })
+      if (data.status === 'indexing') pollIndex(folder)
+      refreshSessions()
+    } catch (e) {
+      setMessages((m) => m.map((msg) => (msg.id === pendingId
+        ? { id: pendingId, role: 'assistant', error: e.message, retryQuestion: question }
+        : msg)))
+    } finally {
+      setBusy(false)
     }
   }
 
-  const handleLogout = () => {
-    // 1. Wipe the browser's memory
-    localStorage.removeItem('doclamar_username');
-    localStorage.removeItem('doclamar_view');
-    
-    // 2. Reset the React state
-    setUsername('');
-    setCurrentView('login');
-  };
-
-if (currentView === 'login') {
-    return <Login onLogin={(name) => {
-      // 👇 ADD THIS LINE 👇
-      localStorage.setItem('doclamar_username', name); 
-      
-      setUsername(name);
-      setCurrentView('home');
-    }} />;
+  const retry = (question) => {
+    setMessages((m) => {
+      const i = m.findIndex((msg) => msg.retryQuestion === question)
+      return i > 0 ? m.slice(0, i - 1).concat(m.slice(i + 1)) : m
+    })
+    send(question)
   }
 
-  // And while you're here, add your logout function to the Home screen!
-  if (currentView === 'home') {
-    return <Home 
-      username={username} 
-      isBackendReady={isBackendReady} 
-      onEnterApp={() => setCurrentView('app')} 
-      onLogout={handleLogout} // <--- Don't forget this if you added the logout function!
-    />;
+  const openSession = async (id) => {
+    if (busy) return
+    try {
+      const data = await api(`/sessions/${id}`, { params: { username } })
+      setSession(data.session)
+      setMessages(messagesFromHistory(data.messages))
+      if (data.session.mode === 'folder' && data.session.folder && data.session.folder !== folder) {
+        setIndexStatus(null)
+        setFolder(data.session.folder)
+      }
+    } catch (e) {
+      setNotice(e.message)
+    }
   }
+
+  const deleteSession = async (id) => {
+    try {
+      await api(`/sessions/${id}`, { method: 'DELETE', params: { username } })
+      if (session?.id === id) newChat()
+      refreshSessions()
+    } catch (e) {
+      setNotice(e.message)
+    }
+  }
+
+  const chatWithFile = async (filePath) => {
+    if (!filePath || busy) return
+    setBusy(true)
+    try {
+      const data = await api('/sessions/file', { method: 'POST', body: { file_path: filePath, username } })
+      setSession(data.session)
+      const pages = data.file.pages ? ` (${data.file.pages} pages)` : ''
+      setMessages([{ id: newId(), role: 'system',
+        content: `Answering only from **${data.file.name}**${pages}. Ask anything about it.` }])
+      refreshSessions()
+    } catch (e) {
+      setNotice(`Couldn't open that file: ${e.message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const logout = () => {
+    newChat()
+    setSessions([])
+    setUsername('')
+    setView('login')
+  }
+
+  // ------------------------------------------------------------------ render
+  const settingsModal = showSettings && (
+    <SettingsModal
+      onClose={() => setShowSettings(false)}
+      onSaved={() => {
+        setShowSettings(false)
+        refreshHealth()
+      }}
+    />
+  )
+
+  if (view === 'login') {
+    return <Login onLogin={(name) => { setUsername(name); setView('home') }} />
+  }
+
+  if (view === 'home') {
+    return (
+      <>
+        <Home
+          username={username}
+          health={health}
+          onEnterApp={() => setView('app')}
+          onOpenSettings={() => setShowSettings(true)}
+          onLogout={logout}
+        />
+        {settingsModal}
+      </>
+    )
+  }
+
+  const fileMode = session?.mode === 'file'
+  const canAsk = ready && !busy && (fileMode || Boolean(folder || session?.folder))
+
   return (
     <div className="app-container">
-      <Sidebar 
-        directory={directory} 
-        onDirectorySubmit={handleDirectorySubmit}
-        isProcessing={isProcessing}
-        onLoadChat={handleLoadChat} // Now takes sessionId
-        onNewChat={handleNewChat}
-        currentChatId={currentChatId}
-        chatMode={chatMode}
-        activeFile={activeFile}
-        onReturnToDirectory={handleReturnToDirectory}
-        refreshTrigger={refreshTrigger}
-        username={username} 
+      <Sidebar
+        username={username}
+        folder={folder}
+        onSelectFolder={selectFolder}
+        indexStatus={indexStatus}
+        indexError={indexError}
+        onRescan={() => syncFolder(folder)}
+        session={session}
+        sessions={sessions}
+        onOpenSession={openSession}
+        onDeleteSession={deleteSession}
+        onNewChat={newChat}
+        onOpenFile={async () => chatWithFile(isDesktop ? await window.doclamar.openFile() : null)}
+        onOpenSettings={() => setShowSettings(true)}
+        onLogout={logout}
+        llmConfigured={Boolean(health?.llm?.configured)}
+        busy={busy}
       />
       <main className="main-content">
-        <ChatWindow 
-          messages={conversations} 
-          onChatWithFile={handleChatWithFile} 
+        {notice && (
+          <div className="notice" role="alert">
+            <span>{notice}</span>
+            <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss">×</button>
+          </div>
+        )}
+        {!ready && <div className="notice subtle">Connecting to the DocLamar engine…</div>}
+        <ChatWindow
+          messages={messages}
+          folder={folder}
+          session={session}
+          onChatWithFile={chatWithFile}
+          onRetry={retry}
+          onPickFolder={async () => isDesktop && selectFolder(await window.doclamar.openDirectory())}
+          onOpenSettings={() => setShowSettings(true)}
         />
-        <QueryInput onSubmit={handleNewMessage} isDisabled={!directory} />
+        <QueryInput
+          onSubmit={send}
+          disabled={!canAsk}
+          placeholder={
+            !ready ? 'Waiting for the engine…'
+              : busy ? 'Working on it…'
+                : canAsk ? (fileMode ? `Ask about ${session.title}…` : 'Ask a question about your documents…')
+                  : 'Choose a folder to start'
+          }
+        />
       </main>
+      {settingsModal}
     </div>
   )
 }
