@@ -108,9 +108,10 @@ class ChatHistory:
                 "INSERT INTO messages (session_id, role, content, created_at) VALUES (?,?,?,?)",
                 (session_id, "user", question, now),
             )
+            # Stored as 'ai' (the original app's convention) so older builds can still read it.
             conn.execute(
                 "INSERT INTO messages (session_id, role, content, created_at, citations) VALUES (?,?,?,?,?)",
-                (session_id, "assistant", answer, now, json.dumps(citations)),
+                (session_id, "ai", answer, now, json.dumps(citations)),
             )
             conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
 
