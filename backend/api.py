@@ -250,6 +250,9 @@ def main() -> None:
 
     load_dotenv()  # development convenience; the packaged app gets settings from Electron
     settings = Settings()
+    if getattr(sys, "frozen", False) and any(settings.model_dir.glob("models--*")):
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")  # bundled models: never phone home
+        os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
     setup_logging(settings)
     if os.environ.get("DOCLAMAR_EXIT_ON_STDIN_EOF") == "1" and sys.stdin is not None:
         _exit_when_parent_dies()
