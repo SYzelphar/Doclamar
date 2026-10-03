@@ -79,6 +79,9 @@ def main() -> int:
                         help="seconds to wait between LLM questions (free-tier rate limits)")
     args = parser.parse_args()
 
+    from dotenv import load_dotenv
+
+    load_dotenv(BACKEND / ".env")  # API key for --answers, same as the API and CLI
     work = Path(tempfile.mkdtemp(prefix="doclamar-eval-"))
     os.environ["DOCLAMAR_HOME"] = str(work / "home")
     corpus = work / "corpus"
