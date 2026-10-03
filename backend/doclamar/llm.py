@@ -17,8 +17,10 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 PROVIDERS = {
-    "groq": {"key_env": "GROQ_API_KEY", "model_env": "GROQ_MODEL", "default_model": "openai/gpt-oss-120b"},
-    "gemini": {"key_env": "GEMINI_API_KEY", "model_env": "GEMINI_MODEL", "default_model": "gemini-2.5-flash"},
+    "groq": {"label": "Groq", "key_env": "GROQ_API_KEY", "model_env": "GROQ_MODEL",
+             "default_model": "openai/gpt-oss-120b"},
+    "gemini": {"label": "Gemini", "key_env": "GEMINI_API_KEY", "model_env": "GEMINI_MODEL",
+               "default_model": "gemini-2.5-flash"},
 }
 
 
@@ -172,7 +174,7 @@ class LLMClient:
         config = LLMConfig(provider, api_key.strip(), (model or "").strip() or PROVIDERS[provider]["default_model"])
         backend = _BACKENDS[provider](config, self.timeout)
         if validate:
-            self._call(backend.check, provider=provider)
+            self._call(backend.check, provider=PROVIDERS[provider]["label"])
         with self._lock:
             self._backend, self._config = backend, config
         logger.info("LLM configured: %s / %s", config.provider, config.model)
@@ -188,7 +190,8 @@ class LLMClient:
         return text.strip()
 
     def _call(self, fn, *args, provider: Optional[str] = None):
-        provider = provider or (self._config.provider if self._config else "the provider")
+        if provider is None:
+            provider = PROVIDERS[self._config.provider]["label"] if self._config else "The provider"
         for attempt in range(self.max_retries + 1):
             try:
                 return fn(*args)
