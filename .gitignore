@@ -1,3 +1,48 @@
-.env
-__pycache__/
+# ----------------------
+# OS / System files
+# ----------------------
 .DS_Store
+Thumbs.db
+
+# ----------------------
+# Editor / IDE
+# ----------------------
+.vscode/
+.idea/
+
+# ----------------------
+# Node / Frontend
+# ----------------------
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Lock files (keep ONE if needed, otherwise ignore)
+yarn.lock
+
+# Build outputs
+dist/
+build/
+frontend/dist/
+doclamar/frontend/release/
+# Vite
+.vite/
+
+# ----------------------
+# Python / Backend
+# ----------------------
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# Environment variables
+.env
+
+# ----------------------
+# Misc
+# ----------------------
+*.log
+*.spec
