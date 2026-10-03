@@ -27,7 +27,7 @@
     ],
     "extraResources": [
       {
-        "from": "../dist/doclamar-backend",
+        "from": "../backend/dist/doclamar-backend",
         "to": "doclamar-backend"
       },
       {

@@ -1,48 +1,36 @@
-# ----------------------
-# OS / System files
-# ----------------------
+# OS / editor
 .DS_Store
 Thumbs.db
-
-# ----------------------
-# Editor / IDE
-# ----------------------
 .vscode/
 .idea/
 
-# ----------------------
-# Node / Frontend
-# ----------------------
+# Secrets — never commit API keys
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Backend build output (PyInstaller)
+backend/build/
+backend/dist/
+backend/models/
+
+# Node / frontend
 node_modules/
 npm-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-
-# Lock files (keep ONE if needed, otherwise ignore)
 yarn.lock
-
-# Build outputs
-dist/
-build/
-frontend/dist/
-doclamar/frontend/release/
-# Vite
 .vite/
+frontend/dist/
+frontend/release/
 
-# ----------------------
-# Python / Backend
-# ----------------------
-venv/
-.venv/
-env/
-__pycache__/
-*.pyc
-
-# Environment variables
-.env
-
-# ----------------------
 # Misc
-# ----------------------
 *.log
-*.spec
