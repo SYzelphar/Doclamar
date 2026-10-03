@@ -1,0 +1,5 @@
+npm run electron-dev ------- for website desiging
+npm run build--------------- to create a build folder
+npm run dist---------------- build standalone app
+
+
