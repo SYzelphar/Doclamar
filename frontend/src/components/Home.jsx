@@ -1,44 +1,41 @@
-import React from 'react';
+const Home = ({ username, health, onEnterApp, onOpenSettings, onLogout }) => {
+  const ready = health?.status === 'ready'
+  const llm = health?.llm
 
-const Home = ({ username, onEnterApp, isBackendReady }) => {
-
-    
   return (
-    <div className="fullscreen-view" style={{ padding: '50px', height: '100vh', display: 'flex', flexDirection: 'column' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '40px' }}>
+    <div className="fullscreen-view home">
+      <header className="home-header">
         <h2>Hello, {username}</h2>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          {/* Status Indicator */}
-          <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: isBackendReady ? '#4ade80' : '#facc15', boxShadow: `0 0 8px ${isBackendReady ? '#4ade80' : '#facc15'}` }}></div>
-          <span style={{ color: '#aaa', fontSize: '0.9rem' }}>
-            Engine Status: {isBackendReady ? 'Online' : 'Waking up...'}
-          </span>
+        <div className="engine-status">
+          <span className={`status-dot ${ready ? 'on' : 'waiting'}`} />
+          Engine: {ready ? `online (v${health.version})` : 'starting…'}
         </div>
       </header>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px', flex: 1 }}>
-        <div className="glass-panel" style={{ padding: '30px', borderRadius: '16px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', border: '1px solid rgba(255,255,255,0.1)' }}>
-          <h3 style={{ marginBottom: '15px' }}>Ready to work?</h3>
-          <p style={{ color: '#aaa', textAlign: 'center', marginBottom: '25px' }}>Start scanning directories or chatting with specific documents.</p>
-          <button 
-            onClick={onEnterApp}
-            disabled={!isBackendReady}
-            style={{ 
-              padding: '12px 30px', 
-              background: isBackendReady ? '#ED7D31' : '#555', 
-              color: 'white', 
-              border: 'none', 
-              borderRadius: '8px', 
-              cursor: isBackendReady ? 'pointer' : 'not-allowed',
-              transition: 'background 0.3s'
-            }}
-          >
-            {isBackendReady ? 'Open Chat Workspace' : 'Engine Loading...'}
-          </button>
-        </div>
+      <div className="glass-panel home-card">
+        <h3>Ready to work?</h3>
+        <p className="muted">Point DocLamar at a folder of PDFs, Word, text or Markdown files and ask questions.
+          Answers cite the exact file and page.</p>
+
+        {ready && !llm?.configured && (
+          <div className="callout">
+            No LLM API key yet — search will work, but answers need a key.
+            <button type="button" className="link-btn" onClick={onOpenSettings}>Add one in Settings</button>
+          </div>
+        )}
+        {ready && llm?.configured && (
+          <p className="muted small">Answers by <b>{llm.provider}</b> · {llm.model}{' '}
+            <button type="button" className="link-btn" onClick={onOpenSettings}>Change</button>
+          </p>
+        )}
+
+        <button type="button" className="primary-btn large" onClick={onEnterApp} disabled={!ready}>
+          {ready ? 'Open workspace' : 'Starting engine…'}
+        </button>
+        <button type="button" className="link-btn" onClick={onLogout}>Not {username}? Switch user</button>
       </div>
     </div>
-  );
-};
+  )
+}
 
-export default Home;
+export default Home

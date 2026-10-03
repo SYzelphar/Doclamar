@@ -1,100 +1,201 @@
-import { useRef, useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
+import 'katex/dist/katex.min.css'
+import { isDesktop } from '../api'
 
-const ChatWindow = ({ messages,onChatWithFile }) => {
-  const messagesEndRef = useRef(null)
+// Code and math are left untouched when linking citations (x[1] in an equation is not a citation).
+const PROTECTED = /(```[\s\S]*?```|`[^`\n]*`|\$\$[\s\S]*?\$\$)/g
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }
+// Models write LaTeX as \( \) and \[ \]; remark-math wants $$. Single $ stays
+// literal so prices like "$31.00" are not turned into math.
+function prepareMarkdown(text) {
+  const withMath = text
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_, m) => `\n$$\n${m.trim()}\n$$\n`)
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_, m) => `$$${m.trim()}$$`)
+  return withMath
+    .split(PROTECTED)
+    .map((part, i) => (i % 2 ? part : part.replace(/(?<![\\\]])\[(\d{1,2})\](?![(:])/g, '[\\[$1\\]](#cite-$1)')))
+    .join('')
+}
 
+const remarkPlugins = [remarkGfm, [remarkMath, { singleDollarTextMath: false }]]
+const rehypePlugins = [rehypeKatex]
+
+function Markdown({ text, onCite }) {
+  return (
+    <div className="markdown-body">
+      <ReactMarkdown
+        remarkPlugins={remarkPlugins}
+        rehypePlugins={rehypePlugins}
+        components={{
+          a: ({ href, children }) => (href?.startsWith('#cite-')
+            ? <button type="button" className="cite-ref" onClick={() => onCite?.(Number(href.slice(6)))}>{children}</button>
+            : <a href={href} target="_blank" rel="noreferrer">{children}</a>),
+        }}
+      >
+        {prepareMarkdown(text || '')}
+      </ReactMarkdown>
+    </div>
+  )
+}
+
+function Sources({ citations, highlight, onChatWithFile, fileMode }) {
+  const [showAll, setShowAll] = useState(false)
+  const [open, setOpen] = useState(() => new Set())
+  const refs = useRef({})
+  const highlighted = highlight?.ref ?? null
+
+  // highlight = { ref, at }: "at" changes on every click so re-clicking [n] scrolls again.
   useEffect(() => {
-    scrollToBottom()
+    if (!highlight) return
+    if (!citations?.some((c) => c.cited && c.ref === highlight.ref)) setShowAll(true)
+    setOpen((prev) => new Set(prev).add(highlight.ref))
+    requestAnimationFrame(() => refs.current[highlight.ref]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }))
+  }, [highlight, citations])
+
+  if (!citations?.length) return null
+  const cited = citations.filter((c) => c.cited)
+  const shown = showAll || cited.length === 0 ? citations : cited
+
+  const toggle = (ref) => setOpen((prev) => {
+    const next = new Set(prev)
+    if (next.has(ref)) next.delete(ref)
+    else next.add(ref)
+    return next
+  })
+
+  return (
+    <div className="citations-container">
+      <h4>Sources</h4>
+      <div className="citations-list">
+        {shown.map((c) => (
+          <div key={c.ref} ref={(el) => { refs.current[c.ref] = el }}
+            className={`citation-item ${highlighted === c.ref ? 'highlight' : ''}`}>
+            <button type="button" className="citation-head" onClick={() => toggle(c.ref)}>
+              <span className="cite-num">{c.ref}</span>
+              <span className="citation-file">{c.file}</span>
+              <span className="citation-where">{[c.pages, c.section].filter(Boolean).join(' · ')}</span>
+              <span className="chevron">{open.has(c.ref) ? '▴' : '▾'}</span>
+            </button>
+            {open.has(c.ref) && (
+              <>
+                <div className="citation-snippet">{c.snippet}{c.snippet?.length >= 400 ? '…' : ''}</div>
+                <div className="citation-actions">
+                  {isDesktop && (
+                    <button type="button" className="link-btn" onClick={() => window.doclamar.openPath(c.path)}>Open file</button>
+                  )}
+                  {isDesktop && (
+                    <button type="button" className="link-btn" onClick={() => window.doclamar.showInFolder(c.path)}>Show in folder</button>
+                  )}
+                  {!fileMode && (
+                    <button type="button" className="link-btn" onClick={() => onChatWithFile(c.path)}>Chat with this file</button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+      {cited.length > 0 && cited.length < citations.length && (
+        <button type="button" className="link-btn" onClick={() => setShowAll((v) => !v)}>
+          {showAll ? 'Show cited sources only' : `Show all ${citations.length} retrieved passages`}
+        </button>
+      )}
+    </div>
+  )
+}
+
+const STATUS_NOTE = {
+  not_found: 'Nothing relevant found',
+  indexing: 'Still indexing',
+  no_llm: 'No API key — showing passages only',
+  llm_error: 'The language model request failed',
+}
+
+function AssistantMessage({ msg, onRetry, onChatWithFile, fileMode }) {
+  const [highlight, setHighlight] = useState(null)
+
+  if (msg.pending) {
+    return (
+      <div className="message assistant-message">
+        <div className="message-text pending"><span className="dots"><i /><i /><i /></span> Searching your documents…</div>
+      </div>
+    )
+  }
+  if (msg.error) {
+    return (
+      <div className="message assistant-message">
+        <div className="message-text error-text">
+          {msg.error}
+          <button type="button" className="secondary-btn small" onClick={() => onRetry(msg.retryQuestion)}>Retry</button>
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="message assistant-message">
+      <div className="message-text">
+        {STATUS_NOTE[msg.status] && <div className={`status-note ${msg.status}`}>{STATUS_NOTE[msg.status]}</div>}
+        <Markdown text={msg.content} onCite={(ref) => setHighlight({ ref, at: Date.now() })} />
+        <Sources citations={msg.citations} highlight={highlight} onChatWithFile={onChatWithFile} fileMode={fileMode} />
+      </div>
+      {msg.timestamp && <div className="message-timestamp">{new Date(msg.timestamp).toLocaleTimeString()}</div>}
+    </div>
+  )
+}
+
+function EmptyState({ folder, session, onPickFolder, onOpenSettings }) {
+  if (session?.mode === 'file') return null
+  return (
+    <div className="empty-state">
+      <h2>Ask your documents anything</h2>
+      {folder ? (
+        <p>Questions are answered from the PDF, Word, text and Markdown files in <code>{folder}</code>, with
+          citations to the exact file and page.</p>
+      ) : (
+        <>
+          <p>Pick a folder of documents. DocLamar indexes it once (only changed files are re-read later), then
+            answers questions with citations to the exact file and page.</p>
+          {isDesktop && <button type="button" className="primary-btn" onClick={onPickFolder}>Choose a folder…</button>}
+        </>
+      )}
+      <p className="muted small">Answers are written by your configured LLM provider; manage your API key in{' '}
+        <button type="button" className="link-btn" onClick={onOpenSettings}>Settings</button>.</p>
+    </div>
+  )
+}
+
+const ChatWindow = ({ messages, folder, session, onChatWithFile, onRetry, onPickFolder, onOpenSettings }) => {
+  const endRef = useRef(null)
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  const fileMode = session?.mode === 'file'
 
   return (
     <div className="chat-window">
       <div className="messages-container">
-        {messages.map((conversation) => (
-          <div key={conversation.id} className="conversation-pair">
-            {/* User Message */}
-            <div className="message user-message">
-              <div className="message-content">
-                <div className="message-avatar">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                    <circle cx="12" cy="7" r="4"></circle>
-                  </svg>
-                </div>
-                <div className="message-text">
-                  <span className="message-label">You</span>
-                  {conversation.user.text}
-                </div>
+        {messages.length === 0 && (
+          <EmptyState folder={folder} session={session} onPickFolder={onPickFolder} onOpenSettings={onOpenSettings} />
+        )}
+        {messages.map((msg) => {
+          if (msg.role === 'system') {
+            return <div key={msg.id} className="system-message"><Markdown text={msg.content} /></div>
+          }
+          if (msg.role === 'user') {
+            return (
+              <div key={msg.id} className="message user-message">
+                <div className="message-text">{msg.content}</div>
               </div>
-              <div className="message-timestamp">
-                {new Date(conversation.user.timestamp).toLocaleTimeString()}
-              </div>
-            </div>
-
-            {/* Assistant Message */}
-            <div className="message assistant-message">
-              <div className="message-content">
-                <div className="message-avatar">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <path d="M12 16v-4M12 8h.01"></path>
-                  </svg>
-                </div>
-                <div className="message-text">
-                  <span className="message-label">Assistant</span>
-                  {conversation.assistant.text}
-                  {conversation.assistant.citations && (
-                    <div className="citations-container">
-                      <h4>Citations:</h4>
-                      <div className="citations-list">
-                        {conversation.assistant.citations.map((citation, index) => (
-                          <div key={index} className="citation-item">
-                            <div key={index} className="citation-item">
-                            {/* Make the header a flex container to hold the filename AND the button */}
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                              
-                              <div className="citation-file" style={{ marginBottom: 0 }}>
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                                  <polyline points="14 2 14 8 20 8"></polyline>
-                                  <line x1="16" y1="13" x2="8" y2="13"></line>
-                                  <line x1="16" y1="17" x2="8" y2="17"></line>
-                                  <polyline points="10 9 9 9 8 9"></polyline>
-                                </svg>
-                                <code>{citation.file}</code>
-                              </div>
-
-                              {/* NEW: The Chat with File button! */}
-                              {citation.path && (
-                                <button 
-                                  onClick={() => onChatWithFile(citation.path, citation.file)}
-                                  style={{ background: 'var(--accent-color)', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '4px', fontSize: '0.75rem', cursor: 'pointer' }}
-                                >
-                                  Chat with this File
-                                </button>
-                              )}
-
-                            </div>
-                            <div className="citation-snippet">{citation.snippet}</div>
-                          </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="message-timestamp">
-                {new Date(conversation.assistant.timestamp).toLocaleTimeString()}
-              </div>
-            </div>
-          </div>
-        ))}
-        <div ref={messagesEndRef} />
+            )
+          }
+          return <AssistantMessage key={msg.id} msg={msg} onRetry={onRetry} onChatWithFile={onChatWithFile} fileMode={fileMode} />
+        })}
+        <div ref={endRef} />
       </div>
     </div>
   )
