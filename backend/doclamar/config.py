@@ -45,16 +45,19 @@ class Settings:
     chunk_overlap_chars: int = 150
     min_chunk_chars: int = 300
     max_file_mb: int = field(default_factory=lambda: _env_int("DOCLAMAR_MAX_FILE_MB", 100))
+    # OCR for scanned PDF pages and images (RapidOCR; models ship with the package).
+    ocr_enabled: bool = field(default_factory=lambda: os.environ.get("DOCLAMAR_OCR", "1") != "0")
 
     # Retrieval
     candidate_pool: int = 50     # per retriever (vector + keyword) before fusion
     rerank_pool: int = 30        # fused candidates sent to the cross-encoder
     top_k: int = 6               # chunks given to the LLM
-    # Relevance = sigmoid(cross-encoder logit). Calibrated with eval/run_eval.py: answerable
-    # questions can score as low as ~1e-3 when phrased differently from the text, while
-    # unrelated questions score < 1e-4.
+    # Relevance = sigmoid(cross-encoder logit). Calibrated with eval/run_eval.py: the hardest
+    # answerable question scores logit -7.0 (digital) / -9.0 (scanned, via OCR), unrelated
+    # questions -9.7 or lower. A false "not found" is worse than one extra LLM call, so the
+    # cut-off sits below all answerable questions; the LLM handles the grey zone.
     min_relevance: float = 0.1          # below this, try one rewritten query
-    not_found_relevance: float = 1e-4   # below this, answer "not found" without calling the LLM
+    not_found_relevance: float = 4.5e-5  # logit -10: below this, answer "not found" without the LLM
 
     @property
     def index_db(self) -> Path:

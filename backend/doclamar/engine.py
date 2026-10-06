@@ -7,6 +7,7 @@ from .config import Settings
 from .embeddings import Embedder, Reranker
 from .history import ChatHistory
 from .indexer import Indexer
+from .ocr import OcrEngine
 from .llm import LLMClient
 from .pipeline import build_pipeline
 from .retrieval import Retriever
@@ -20,6 +21,7 @@ class Engine:
         embedder: Optional[Embedder] = None,
         reranker: Optional[Reranker] = None,
         llm: Optional[LLMClient] = None,
+        ocr: Optional[OcrEngine] = None,
         use_reranker: bool = True,
     ):
         self.settings = settings or Settings()
@@ -29,7 +31,8 @@ class Engine:
         if reranker is None and use_reranker:
             reranker = Reranker(self.settings)
         self.reranker = reranker
-        self.indexer = Indexer(self.store, self.embedder, self.settings)
+        self.ocr = ocr if ocr is not None else (OcrEngine() if self.settings.ocr_enabled else None)
+        self.indexer = Indexer(self.store, self.embedder, self.settings, ocr=self.ocr)
         self.retriever = Retriever(self.store, self.embedder, self.reranker, self.settings)
         self.history = ChatHistory(self.settings.chats_db)
         self.llm = llm or LLMClient.from_env()

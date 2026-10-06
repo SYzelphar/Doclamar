@@ -10,8 +10,11 @@ Retrieval metrics (default, offline, no LLM calls):
 
 With --answers it also runs the full pipeline (needs an LLM API key) and reports
 ROUGE-L against the reference answers and whether the answer cites its sources.
+With --scanned the paper is replaced by an image-only scan of itself, so every
+answer has to come through OCR.
 
     python -m eval.run_eval                 # from backend/
+    python -m eval.run_eval --scanned
     python -m eval.run_eval --answers --json results.json
 """
 from __future__ import annotations
@@ -64,8 +67,14 @@ def rouge_l(hypothesis: str, reference: str) -> float:
     return round(2 * p * r / (p + r), 4)
 
 
-def build_corpus(root: Path) -> Path:
-    shutil.copy(BACKEND / "eval" / "data" / TARGET_FILE, root / TARGET_FILE)
+def build_corpus(root: Path, scanned: bool = False) -> Path:
+    src = BACKEND / "eval" / "data" / TARGET_FILE
+    if scanned:
+        from eval.scan import make_scanned_pdf
+
+        make_scanned_pdf(src, root / TARGET_FILE)
+    else:
+        shutil.copy(src, root / TARGET_FILE)
     write_distractors(root)
     return root
 
@@ -75,6 +84,7 @@ def main() -> int:
     parser.add_argument("--top-k", type=int, default=6)
     parser.add_argument("--answers", action="store_true", help="also generate answers with the LLM")
     parser.add_argument("--json", help="write per-question results to this file")
+    parser.add_argument("--scanned", action="store_true", help="use an image-only scan of the paper (tests OCR)")
     parser.add_argument("--pause", type=float, default=0.0,
                         help="seconds to wait between LLM questions (free-tier rate limits)")
     args = parser.parse_args()
@@ -86,7 +96,7 @@ def main() -> int:
     os.environ["DOCLAMAR_HOME"] = str(work / "home")
     corpus = work / "corpus"
     corpus.mkdir()
-    build_corpus(corpus)
+    build_corpus(corpus, scanned=args.scanned)
 
     from rich.console import Console
     from rich.table import Table
@@ -102,8 +112,8 @@ def main() -> int:
         index_s = time.time() - t0
         summary = engine.store.folder_summary(str(corpus))
         console.print(
-            f"Indexed {summary['files_indexed']}/{summary['files_total']} files, "
-            f"{summary['chunks']} chunks in {index_s:.1f}s "
+            f"Indexed {summary['files_indexed']}/{summary['files_total']} files "
+            f"({summary['files_ocr']} via OCR), {summary['chunks']} chunks in {index_s:.1f}s "
             f"(issues: {[Path(i['path']).name + ': ' + i['status'] for i in summary['issues']]})"
         )
         scope = Scope(folder=str(corpus))
@@ -143,7 +153,7 @@ def main() -> int:
             hits = engine.retriever.search(query, scope, top_k=args.top_k)
             negatives.append({"query": query, "top_relevance": hits[0].relevance if hits else None})
 
-        table = Table(title=f"Retrieval (top-{args.top_k})")
+        table = Table(title=f"Retrieval (top-{args.top_k}{', scanned paper' if args.scanned else ''})")
         for col in ("Question", "hit", "MRR", "prec", "ctx", "rel", "sec"):
             table.add_column(col)
         if args.answers:

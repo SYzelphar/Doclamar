@@ -18,7 +18,7 @@ datas, binaries, hiddenimports = [], [], []
 conda_bin = Path(sys.base_prefix) / "Library" / "bin"
 for pattern in ("libssl*.dll", "libcrypto*.dll"):
     binaries += [(str(dll), ".") for dll in conda_bin.glob(pattern)]
-for package in ("fastembed", "pypdfium2", "pypdfium2_raw", "docx", "onnxruntime", "tokenizers"):
+for package in ("fastembed", "pypdfium2", "pypdfium2_raw", "docx", "onnxruntime", "tokenizers", "rapidocr"):
     d, b, h = collect_all(package)
     datas += d
     binaries += b
@@ -39,6 +39,8 @@ a = Analysis(
     excludes=["torch", "tensorflow", "matplotlib", "tkinter", "IPython", "notebook", "pytest"],
     noarchive=False,
 )
+# OpenCV's video I/O plugin (~30 MB of FFmpeg) is never used for OCR.
+a.binaries = [b for b in a.binaries if "opencv_videoio_ffmpeg" not in b[0]]
 pyz = PYZ(a.pure)
 
 exe = EXE(

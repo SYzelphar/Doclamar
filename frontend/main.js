@@ -9,7 +9,7 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
-const DOC_EXTENSIONS = [".pdf", ".docx", ".txt", ".md"];
+const DOC_EXTENSIONS = [".pdf", ".docx", ".txt", ".md", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"];
 
 // A fresh random token per launch: only this app's window can talk to the backend.
 const backend = {

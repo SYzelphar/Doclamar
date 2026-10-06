@@ -60,6 +60,42 @@ class FakeReranker:
         return [4.0 * len(q & set(_words(p))) - 8.0 for p in passages]
 
 
+class FakeOcr:
+    """Stands in for RapidOCR: every page/image 'reads' as the same lines."""
+
+    workers = 1
+
+    def __init__(self, lines=None, available=True, fail=False):
+        self.lines = lines if lines is not None else ["SCANNED INVOICE", "Invoice number 4471 for consulting services."]
+        self._available = available
+        self.fail = fail
+        self.calls = 0
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    @property
+    def unavailable_reason(self):
+        return None if self._available else "OCR engine failed to load: test"
+
+    def read_lines(self, image):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("OCR crashed on this page")
+        return list(self.lines)
+
+    def map_ordered(self, fn, items):
+        return map(fn, items)
+
+
+def make_scanned_pdf(path: Path, pages=(0,), dpi: int = 150) -> Path:
+    """An image-only copy of pages of the sample paper, like a scanner would produce."""
+    from eval.scan import make_scanned_pdf as scan
+
+    return scan(SAMPLE_PDF, path, pages=pages, dpi=dpi)
+
+
 class FakeLLM:
     def __init__(self, configured: bool = True, answer: str = "The answer is in the documents [1]."):
         self._configured = configured
@@ -100,7 +136,7 @@ def fake_llm() -> FakeLLM:
 
 @pytest.fixture
 def engine(settings, fake_llm):
-    e = Engine(settings, embedder=FakeEmbedder(), reranker=FakeReranker(), llm=fake_llm)
+    e = Engine(settings, embedder=FakeEmbedder(), reranker=FakeReranker(), llm=fake_llm, ocr=FakeOcr())
     yield e
     e.close()
 
@@ -125,7 +161,7 @@ def docs(tmp_path) -> Path:
     table.rows[0].cells[1].text = "Shlok"
     d.save(root / "sub" / "meeting.docx")
     # Must be ignored:
-    (root / "image.png").write_bytes(b"\x89PNG")
+    (root / "data.xlsx").write_bytes(b"PK\x03\x04")
     (root / ".hidden").mkdir()
     (root / ".hidden" / "secret.txt").write_text("hidden content", encoding="utf-8")
     (root / "node_modules").mkdir()
