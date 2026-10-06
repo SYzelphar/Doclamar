@@ -796,6 +796,15 @@ button:disabled {
   color: var(--text-secondary);
 }
 
+.ocr-badge {
+  font-size: 0.65rem;
+  letter-spacing: 0.05em;
+  color: var(--warning);
+  border: 1px solid rgba(245, 183, 78, 0.5);
+  border-radius: 4px;
+  padding: 0 0.3rem;
+}
+
 .citation-snippet {
   color: var(--text-secondary);
   line-height: 1.5;

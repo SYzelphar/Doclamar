@@ -55,6 +55,7 @@ Rules:
 - Cite every factual statement with its excerpt number in square brackets, e.g. [2] or [1][3].
 - Lead with the direct answer (no "Answer:" label), then supporting detail. Use short paragraphs or bullet points and Markdown where it helps.
 - If excerpts come from different files that disagree or describe different things, say which file each statement comes from.
+- Excerpts marked "scanned text (OCR)" were read from images and may contain recognition errors; read past obvious typos, but don't guess at numbers you can't make out.
 - Do not add a references list at the end; the sources are shown to the user separately."""
 
 CONDENSE_PROMPT = """Rewrite the user's latest message as a standalone search query for their documents, resolving pronouns and references using the conversation. Return only the query, nothing else.
@@ -91,7 +92,7 @@ def _format_history(history: List[dict], limit: int = 600) -> str:
 def format_excerpts(hits: List[Hit]) -> str:
     blocks = []
     for n, hit in enumerate(hits, start=1):
-        where = " — ".join(x for x in (hit.name, hit.pages, hit.section) if x)
+        where = " — ".join(x for x in (hit.name, hit.pages, hit.section, "scanned text (OCR)" if hit.ocr else "") if x)
         blocks.append(f"[{n}] {where}\n{hit.text}")
     return "\n\n".join(blocks)
 
@@ -116,6 +117,7 @@ def citations_for(hits: List[Hit], answer: str) -> List[dict]:
             "section": hit.section,
             "snippet": hit.text[:400],
             "relevance": hit.relevance,
+            "ocr": hit.ocr,
             "cited": n in cited,
         }
         for n, hit in enumerate(hits, start=1)

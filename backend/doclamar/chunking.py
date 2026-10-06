@@ -20,6 +20,7 @@ class Chunk:
     section: Optional[str]
     page_start: Optional[int]
     page_end: Optional[int]
+    ocr: bool = False  # some of the text came from OCR
 
 
 @dataclass
@@ -28,6 +29,7 @@ class _Unit:
     page: Optional[int]
     section: Optional[str]
     is_heading: bool = False
+    ocr: bool = False
 
 
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+(?=[\"'(\[]?[A-Z0-9])")
@@ -82,9 +84,9 @@ def chunk_document(
     for seg in doc.segments:
         if seg.is_heading:
             section = seg.text[:200]
-            units.append(_Unit(seg.text, seg.page, section, is_heading=True))
+            units.append(_Unit(seg.text, seg.page, section, is_heading=True, ocr=seg.ocr))
         else:
-            units.extend(_Unit(s, seg.page, section) for s in _sentences(seg.text, unit_limit))
+            units.extend(_Unit(s, seg.page, section, ocr=seg.ocr) for s in _sentences(seg.text, unit_limit))
 
     chunks: List[Chunk] = []
 
@@ -101,6 +103,7 @@ def chunk_document(
             section=headings[-1] if headings else next((u.section for u in buf if u.section), None),
             page_start=min(pages) if pages else None,
             page_end=max(pages) if pages else None,
+            ocr=any(u.ocr for u in buf),
         ))
 
     buf: List[_Unit] = []

@@ -3,6 +3,10 @@
 A sync walks the folder, compares (size, mtime) with what is stored, parses +
 embeds only new or changed files, and drops files that disappeared. Jobs run one
 at a time on a background worker so the API stays responsive.
+
+Scanned PDF pages and images go through OCR. If OCR is off or unavailable they
+are recorded as "needs_ocr" and picked up automatically by a later sync once it
+works, without re-reading every other file.
 """
 from __future__ import annotations
 
@@ -13,13 +17,16 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 from .chunking import Chunk, chunk_document
 from .config import Settings
 from .embeddings import Embedder, ModelUnavailable
 from .parsing import SUPPORTED_EXTENSIONS, ParseError, parse_file
 from .store import IndexStore, Scope, path_key
+
+if TYPE_CHECKING:
+    from .ocr import OcrEngine
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +48,7 @@ class IndexJob:
     failed: int = 0
     removed: int = 0
     current_file: Optional[str] = None
+    detail: Optional[str] = None  # e.g. "OCR page 3 of 12" for long scanned documents
     error: Optional[str] = None
     started_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None
@@ -72,10 +80,12 @@ def index_fingerprint(settings: Settings) -> str:
 
 
 class Indexer:
-    def __init__(self, store: IndexStore, embedder: Embedder, settings: Settings):
+    def __init__(self, store: IndexStore, embedder: Embedder, settings: Settings,
+                 ocr: Optional["OcrEngine"] = None):
         self.store = store
         self.embedder = embedder
         self.settings = settings
+        self.ocr = ocr
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="indexer")
         self._jobs: Dict[str, IndexJob] = {}
         self._lock = threading.Lock()
@@ -121,7 +131,7 @@ class Indexer:
             logger.exception("Indexing failed for %s", job.folder)
             job.state, job.error = "error", str(e)
         finally:
-            job.current_file = None
+            job.current_file = job.detail = None
             job.finished_at = time.time()
 
     # --------------------------------------------------------------- syncing
@@ -139,21 +149,23 @@ class Indexer:
         self.store.delete_files(gone)
         job.removed = len(gone)
 
+        retry_ocr = any(row["status"] == "needs_ocr" for row in known.values()) and self._ocr_works()
         todo = [
             (path, size, mtime)
             for key, (path, size, mtime) in found.items()
             if key not in known
             or known[key]["size"] != size
             or abs(known[key]["mtime"] - mtime) > 1e-3
+            or (retry_ocr and known[key]["status"] == "needs_ocr")
         ]
         job.to_index = len(todo)
         job.state = "indexing"
         logger.info("Sync %s: %d files, %d to index, %d removed", folder, len(found), len(todo), len(gone))
 
         for path, size, mtime in todo:
-            job.current_file = path
+            job.current_file, job.detail = path, None
             try:
-                status = self._index_one(path, size, mtime)
+                status = self._index_one(path, size, mtime, job)
                 if status == "error":
                     job.failed += 1
             except ModelUnavailable:
@@ -195,13 +207,22 @@ class Indexer:
                 found[path_key(path)] = (path, stat.st_size, stat.st_mtime)
         return found
 
-    def _index_one(self, path: str, size: int, mtime: float) -> str:
+    def _ocr_works(self) -> bool:
+        return self.ocr is not None and self.ocr.available
+
+    def _ocr_missing_reason(self) -> str:
+        if self.ocr is None:
+            return "OCR is turned off"
+        return self.ocr.unavailable_reason or "OCR is unavailable"
+
+    def _index_one(self, path: str, size: int, mtime: float, job: Optional[IndexJob] = None) -> str:
         if size > self.settings.max_file_mb * 1024 * 1024:
             self.store.save_file(path, size, mtime, "too_large",
                                  error=f"Larger than {self.settings.max_file_mb} MB")
             return "too_large"
+        progress = (lambda message: setattr(job, "detail", message)) if job else None
         try:
-            doc = parse_file(path)
+            doc = parse_file(path, ocr=self.ocr, progress=progress)
         except ParseError as e:
             self.store.save_file(path, size, mtime, "error", error=str(e))
             return "error"
@@ -213,11 +234,18 @@ class Indexer:
         s = self.settings
         chunks = chunk_document(doc, s.chunk_chars, s.chunk_overlap_chars, s.min_chunk_chars)
         if not chunks:
-            hint = " (scanned PDF? it needs OCR)" if path.lower().endswith(".pdf") else ""
+            if doc.ocr_needed:
+                self.store.save_file(path, size, mtime, "needs_ocr", num_pages=doc.num_pages,
+                                     error=f"Scanned, no text layer: {self._ocr_missing_reason()}")
+                return "needs_ocr"
+            reason = "No readable text found, even with OCR" if doc.ocr_pages else "No extractable text"
             self.store.save_file(path, size, mtime, "no_text", num_pages=doc.num_pages,
-                                 error=f"No extractable text{hint}")
+                                 error=reason, ocr_pages=doc.ocr_pages)
             return "no_text"
 
         vectors = self.embedder.embed_documents([embedding_text(path, c) for c in chunks])
-        self.store.save_file(path, size, mtime, "indexed", chunks, vectors, num_pages=doc.num_pages)
+        # Mixed documents keep their text pages searchable even when scanned pages can't be read.
+        note = f"{doc.ocr_needed} scanned page(s) skipped: {self._ocr_missing_reason()}" if doc.ocr_needed else None
+        self.store.save_file(path, size, mtime, "indexed", chunks, vectors, num_pages=doc.num_pages,
+                             error=note, ocr_pages=doc.ocr_pages)
         return "indexed"

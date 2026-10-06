@@ -133,7 +133,8 @@ def create_app(engine: Optional[Engine] = None, token: Optional[str] = None,
 
     @app.get("/health")
     def health():
-        return {"status": "ready", "version": __version__, "llm": engine.llm.describe()}
+        return {"status": "ready", "version": __version__, "llm": engine.llm.describe(),
+                "ocr": {"enabled": engine.ocr is not None}}
 
     @app.post("/config/llm")
     def configure_llm(req: LLMSettingsRequest):

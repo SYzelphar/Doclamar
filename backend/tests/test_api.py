@@ -83,7 +83,7 @@ def test_file_chat_is_scoped_to_that_file(client, docs):
 
 def test_file_chat_errors(client, docs, tmp_path):
     assert client.post("/sessions/file", json={"file_path": str(docs / "nope.pdf")}).status_code == 404
-    assert client.post("/sessions/file", json={"file_path": str(docs / "image.png")}).status_code == 415
+    assert client.post("/sessions/file", json={"file_path": str(docs / "data.xlsx")}).status_code == 415
     empty = tmp_path / "empty.txt"
     empty.write_text("   ", encoding="utf-8")
     r = client.post("/sessions/file", json={"file_path": str(empty)})

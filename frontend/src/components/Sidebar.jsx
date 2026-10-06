@@ -28,7 +28,11 @@ function IndexStatus({ status, error, onRescan }) {
             : 'Scanning folder…'}
         </div>
         <div className="progress"><div style={{ width: `${pct}%` }} /></div>
-        {job.current_file && <div className="index-file" title={job.current_file}>{baseName(job.current_file)}</div>}
+        {job.current_file && (
+          <div className="index-file" title={job.current_file}>
+            {baseName(job.current_file)}{job.detail ? ` — ${job.detail}` : ''}
+          </div>
+        )}
       </div>
     )
   }
@@ -40,6 +44,7 @@ function IndexStatus({ status, error, onRescan }) {
       <div className="index-line">
         <span className="ok-dot" /> {status.files_indexed} file{status.files_indexed === 1 ? '' : 's'} indexed
         · {status.chunks.toLocaleString()} passages
+        {status.files_ocr > 0 && <span title="Scanned PDFs or images read with OCR"> · {status.files_ocr} via OCR</span>}
         <button type="button" className="link-btn" onClick={onRescan} title="Look for new or changed files">Rescan</button>
       </div>
       {issues.length > 0 && (
@@ -56,7 +61,9 @@ function IndexStatus({ status, error, onRescan }) {
           )}
         </>
       )}
-      {status.files_total === 0 && <div className="index-line muted">No PDF, DOCX, TXT or MD files found here.</div>}
+      {status.files_total === 0 && (
+        <div className="index-line muted">No PDFs, Word, text, Markdown or image files found here.</div>
+      )}
     </div>
   )
 }

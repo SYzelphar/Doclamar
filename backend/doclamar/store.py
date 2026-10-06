@@ -19,7 +19,7 @@ import numpy as np
 
 from .chunking import Chunk
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS files (
     error       TEXT,
     num_pages   INTEGER,
     num_chunks  INTEGER NOT NULL DEFAULT 0,
+    ocr_pages   INTEGER NOT NULL DEFAULT 0,   -- pages/images read with OCR
     indexed_at  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS chunks (
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     section     TEXT,
     page_start  INTEGER,
     page_end    INTEGER,
+    ocr         INTEGER NOT NULL DEFAULT 0,
     embedding   BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
@@ -128,6 +130,10 @@ class IndexStore:
         with self._db() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
+            # v1 -> v2: OCR bookkeeping. Additive, so existing indexes are kept.
+            for table, column in (("files", "ocr_pages"), ("chunks", "ocr")):
+                if column not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     @contextmanager
@@ -171,7 +177,7 @@ class IndexStore:
         where, params = scope.sql()
         with self._db() as conn:
             rows = conn.execute(
-                f"SELECT id, path, path_key, size, mtime, status FROM files f WHERE {where}", params
+                f"SELECT id, path, path_key, size, mtime, status, ocr_pages FROM files f WHERE {where}", params
             ).fetchall()
         return {r["path_key"]: r for r in rows}
 
@@ -189,6 +195,7 @@ class IndexStore:
         embeddings: Optional[np.ndarray] = None,
         num_pages: Optional[int] = None,
         error: Optional[str] = None,
+        ocr_pages: int = 0,
     ) -> int:
         """Insert or replace a file and all of its chunks atomically."""
         name = os.path.basename(path)
@@ -199,28 +206,28 @@ class IndexStore:
 
         with self._write_lock, self._db() as conn:
             row = conn.execute("SELECT id FROM files WHERE path_key = ?", (key,)).fetchone()
-            values = (path, name, ext, size, mtime, status, error, num_pages, len(chunks), _now())
+            values = (path, name, ext, size, mtime, status, error, num_pages, len(chunks), ocr_pages, _now())
             if row:
                 file_id = row["id"]
                 self._delete_chunks(conn, [file_id])
                 conn.execute(
                     "UPDATE files SET path=?, name=?, ext=?, size=?, mtime=?, status=?, error=?,"
-                    " num_pages=?, num_chunks=?, indexed_at=? WHERE id=?",
+                    " num_pages=?, num_chunks=?, ocr_pages=?, indexed_at=? WHERE id=?",
                     values + (file_id,),
                 )
             else:
                 file_id = conn.execute(
                     "INSERT INTO files (path, name, ext, size, mtime, status, error, num_pages,"
-                    " num_chunks, indexed_at, path_key) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    " num_chunks, ocr_pages, indexed_at, path_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     values + (key,),
                 ).lastrowid
 
             for chunk, vector in zip(chunks, embeddings if embeddings is not None else []):
                 chunk_id = conn.execute(
-                    "INSERT INTO chunks (file_id, ordinal, text, section, page_start, page_end, embedding)"
-                    " VALUES (?,?,?,?,?,?,?)",
+                    "INSERT INTO chunks (file_id, ordinal, text, section, page_start, page_end, ocr, embedding)"
+                    " VALUES (?,?,?,?,?,?,?,?)",
                     (file_id, chunk.ordinal, chunk.text, chunk.section, chunk.page_start,
-                     chunk.page_end, np.asarray(vector, dtype=np.float32).tobytes()),
+                     chunk.page_end, int(chunk.ocr), np.asarray(vector, dtype=np.float32).tobytes()),
                 ).lastrowid
                 conn.execute(
                     "INSERT INTO chunks_fts (rowid, text, section, name) VALUES (?,?,?,?)",
@@ -267,9 +274,10 @@ class IndexStore:
             counts = dict(conn.execute(
                 f"SELECT status, COUNT(*) FROM files f WHERE {where} GROUP BY status", params
             ).fetchall())
-            chunks = conn.execute(
-                f"SELECT COALESCE(SUM(num_chunks), 0) FROM files f WHERE {where}", params
-            ).fetchone()[0]
+            chunks, ocr_files = conn.execute(
+                f"SELECT COALESCE(SUM(num_chunks), 0), COUNT(CASE WHEN status = 'indexed' AND ocr_pages > 0"
+                f" THEN 1 END) FROM files f WHERE {where}", params
+            ).fetchone()
             issues = conn.execute(
                 f"SELECT path, status, error FROM files f WHERE {where} AND status != 'indexed'"
                 " ORDER BY name LIMIT 50", params
@@ -279,6 +287,7 @@ class IndexStore:
             "files_indexed": counts.get("indexed", 0),
             "files_total": sum(counts.values()),
             "chunks": chunks,
+            "files_ocr": ocr_files,
             "issues": [dict(r) for r in issues],
         }
 
@@ -342,7 +351,7 @@ class IndexStore:
         marks = ",".join("?" * len(chunk_ids))
         with self._db() as conn:
             rows = conn.execute(
-                "SELECT c.id, c.file_id, c.ordinal, c.text, c.section, c.page_start, c.page_end,"
+                "SELECT c.id, c.file_id, c.ordinal, c.text, c.section, c.page_start, c.page_end, c.ocr,"
                 f" f.path, f.name FROM chunks c JOIN files f ON f.id = c.file_id WHERE c.id IN ({marks})",
                 list(chunk_ids),
             ).fetchall()

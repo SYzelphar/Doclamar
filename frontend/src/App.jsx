@@ -214,6 +214,8 @@ function App() {
   const chatWithFile = async (filePath) => {
     if (!filePath || busy) return
     setBusy(true)
+    setMessages([{ id: newId(), role: 'system',
+      content: 'Reading the file… scanned documents and images are run through OCR, which can take a moment.' }])
     try {
       const data = await api('/sessions/file', { method: 'POST', body: { file_path: filePath, username } })
       setSession(data.session)
@@ -222,6 +224,7 @@ function App() {
         content: `Answering only from **${data.file.name}**${pages}. Ask anything about it.` }])
       refreshSessions()
     } catch (e) {
+      setMessages([])
       setNotice(`Couldn't open that file: ${e.message}`)
     } finally {
       setBusy(false)

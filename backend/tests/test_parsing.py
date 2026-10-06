@@ -21,6 +21,8 @@ def test_heading_positives(line):
     "PESQ 2.76 2.81 2.92 2.88 2.33",
     "978-1-5386-4658-8/18/$31.00 ©2018 IEEE 2516 ICASSP 2018",
     "LSTM",
+    "ICASSP 2018",
+    "PESQ 1.54",
     "The network was trained for 100 epochs.",
     "3",
 ])

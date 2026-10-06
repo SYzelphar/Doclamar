@@ -77,6 +77,7 @@ function Sources({ citations, highlight, onChatWithFile, fileMode }) {
             <button type="button" className="citation-head" onClick={() => toggle(c.ref)}>
               <span className="cite-num">{c.ref}</span>
               <span className="citation-file">{c.file}</span>
+              {c.ocr && <span className="ocr-badge" title="Read from a scan or image with OCR; may contain recognition errors">OCR</span>}
               <span className="citation-where">{[c.pages, c.section].filter(Boolean).join(' · ')}</span>
               <span className="chevron">{open.has(c.ref) ? '▴' : '▾'}</span>
             </button>
@@ -153,12 +154,13 @@ function EmptyState({ folder, session, onPickFolder, onOpenSettings }) {
     <div className="empty-state">
       <h2>Ask your documents anything</h2>
       {folder ? (
-        <p>Questions are answered from the PDF, Word, text and Markdown files in <code>{folder}</code>, with
-          citations to the exact file and page.</p>
+        <p>Questions are answered from the PDFs (including scanned ones), Word, text, Markdown and image files
+          in <code>{folder}</code>, with citations to the exact file and page.</p>
       ) : (
         <>
-          <p>Pick a folder of documents. DocLamar indexes it once (only changed files are re-read later), then
-            answers questions with citations to the exact file and page.</p>
+          <p>Pick a folder of documents. DocLamar indexes it once (only changed files are re-read later), reads
+            scanned PDFs and photos of pages with OCR, then answers questions with citations to the exact file
+            and page.</p>
           {isDesktop && <button type="button" className="primary-btn" onClick={onPickFolder}>Choose a folder…</button>}
         </>
       )}

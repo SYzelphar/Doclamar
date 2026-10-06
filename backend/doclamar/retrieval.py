@@ -23,6 +23,7 @@ class Hit:
     page_end: Optional[int]
     score: float                 # what the list is sorted by
     relevance: Optional[float]   # 0..1 from the cross-encoder; None without a reranker
+    ocr: bool = False            # text was recognised from a scan or image
 
     @property
     def pages(self) -> str:
@@ -87,7 +88,8 @@ class Retriever:
             hits.append(Hit(
                 chunk_id=chunk_id, path=row["path"], name=row["name"], text=row["text"],
                 section=row["section"], page_start=row["page_start"], page_end=row["page_end"],
-                score=round(score, 4), relevance=None if relevance is None else round(relevance, 4),
+                score=round(score, 4), relevance=relevance,  # unrounded: thresholds go down to 1e-5
+                ocr=bool(row["ocr"]),
             ))
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:top_k]

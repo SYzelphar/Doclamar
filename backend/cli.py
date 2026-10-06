@@ -40,7 +40,8 @@ def _sync(engine, folder: str) -> None:
         while worker.is_alive():
             if job.state == "indexing":
                 name = os.path.basename(job.current_file or "")
-                status.update(f"Indexing {job.processed}/{job.to_index}: {name}")
+                detail = f" ({job.detail})" if job.detail else ""
+                status.update(f"Indexing {job.processed}/{job.to_index}: {name}{detail}")
             time.sleep(0.2)
     _print_status(engine, folder)
 
