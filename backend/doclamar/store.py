@@ -201,7 +201,7 @@ class IndexStore:
         where, params = scope.sql()
         with self._db() as conn:
             rows = conn.execute(
-                f"SELECT id, path, path_key, size, mtime, status, ocr_pages FROM files f WHERE {where}", params
+                f"SELECT id, path, path_key, size, mtime, status, ocr_pages, num_pages, error FROM files f WHERE {where}", params
             ).fetchall()
         return {r["path_key"]: r for r in rows}
 

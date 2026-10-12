@@ -10,7 +10,9 @@
   overview: passages spread across the document(s) plus any relevant hits. No
   single passage answers such questions, so relevance search alone finds nothing.
   Questions about a position ("the last page", "page 12", "pages 3 to 5") fetch
-  exactly those pages: semantic search has no notion of page numbers.
+  exactly those pages: semantic search has no notion of page numbers. Questions
+  about the folder itself ("what files are here?") are answered from the index,
+  since the model only ever sees passages from inside documents.
 * rewrite: if nothing relevant came back, reword the query once and retry
   (1 LLM call). Most questions never take this path.
 * generate: one LLM call that answers from numbered excerpts with [n] citations.
@@ -32,6 +34,7 @@ from typing import Annotated, List, Optional, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from .config import Settings
+from .inventory import file_summary, folder_inventory
 from .llm import LLMClient, LLMError
 from .retrieval import Hit, Retriever
 from .store import Scope
@@ -49,7 +52,7 @@ class RAGState(TypedDict, total=False):
     scope: Scope
     search_query: str
     hits: List[Hit]
-    mode: str  # search | overview | fallback | pages
+    mode: str  # search | overview | fallback | pages | inventory
     page_info: dict
     attempts: int
     answer: str
@@ -136,6 +139,28 @@ def page_reference(question: str) -> Optional[List[int]]:
     if m := re.search(r"\b(?:page|pg\.?|p\.)\s*(?:no\.?\s*|number\s*|#\s*)?(\d{1,4})\b", q):
         return [int(m.group(1))]
     return None
+
+
+_LISTABLE = r"(?:files?|folders?|sub-?folders?|documents?|docs?|pdfs?|directories|directory)"
+_INVENTORY = re.compile(
+    r"\b(?:list|show|display|enumerate|give me)\b(?:\s+\w+){0,3}?\s+" + _LISTABLE + r"\b"
+    r"|\bwhat\s+(?:all\s+)?" + _LISTABLE + r"(?:\s+and\s+" + _LISTABLE + r")?\s+(?:are|exist|do|does|is|i have|have i|there)\b"
+    r"|\bwhich\s+" + _LISTABLE + r"\s+(?:are there|exist|do i have|have i got|are in|are inside)\b"
+    r"|\bhow\s+many\s+" + _LISTABLE + r"\b"
+    r"|\bwhat(?:'s| is)\s+(?:in|inside)\s+(?:this|the|my)\s+(?:folder|directory)\b"
+    r"|\b(?:contents|structure)\s+of\s+(?:this|the|my)\s+(?:folder|directory)\b"
+    r"|\bfolder\s+(?:structure|contents|tree)\b",
+    re.IGNORECASE,
+)
+_ABOUT_CONTENT = re.compile(
+    r"\b(?:about|mention\w*|discuss\w*|talk\w*|cover\w*|explain\w*|contain\w*|regarding|related|describ\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def is_inventory_question(question: str) -> bool:
+    """Questions about which files exist, rather than what they say."""
+    return bool(_INVENTORY.search(question)) and not _ABOUT_CONTENT.search(question)
 
 
 def is_overview_question(question: str) -> bool:
@@ -238,7 +263,12 @@ def build_pipeline(retriever: Retriever, llm: LLMClient, settings: Settings):
             return {"hits": hits, "mode": "pages", "page_info": info,
                     "timings": {"retrieve": round(time.time() - t0, 3)}}
 
-        if is_overview_question(state["question"]):
+        overview = is_overview_question(state["question"])
+        # "Give me an overview of the documents" should summarise them, not list them.
+        if not overview and is_inventory_question(state["question"]):
+            return {"hits": [], "mode": "inventory", "timings": {"retrieve": round(time.time() - t0, 3)}}
+
+        if overview:
             # Relevant passages first (for "summarise the results"), then a spread of the document(s).
             matched = [h for h in retriever.search(state["search_query"], scope, top_k=4)
                        if h.relevance is None or h.relevance >= settings.min_relevance]
@@ -267,7 +297,7 @@ def build_pipeline(retriever: Retriever, llm: LLMClient, settings: Settings):
                 "timings": {"rewrite": round(time.time() - t0, 3)}}
 
     def after_retrieve(state: RAGState) -> str:
-        if state.get("mode") == "pages" or confident(state.get("hits") or []):
+        if state.get("mode") in ("pages", "inventory") or confident(state.get("hits") or []):
             return "generate"
         if state.get("attempts", 0) < 1 and llm.configured:
             return "rewrite"
@@ -279,6 +309,11 @@ def build_pipeline(retriever: Retriever, llm: LLMClient, settings: Settings):
         mode = state.get("mode", "search")
         scope = state["scope"]
         info = state.get("page_info") or {}
+        if mode == "inventory":
+            listing = (file_summary(scope.files[0], retriever.store) if scope.files
+                       else folder_inventory(scope.folder, retriever.store))
+            return {"status": "answered", "answer": listing or "I couldn't list that.", "citations": [],
+                    "timings": {"generate": round(time.time() - t0, 3)}}
         if mode == "pages" and info.get("message"):
             # No such page, or nothing readable on it: say so plainly instead of guessing.
             return {"status": "answered", "answer": info["message"], "citations": [],
