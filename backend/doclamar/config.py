@@ -52,6 +52,7 @@ class Settings:
     candidate_pool: int = 50     # per retriever (vector + keyword) before fusion
     rerank_pool: int = 30        # fused candidates sent to the cross-encoder
     top_k: int = 6               # chunks given to the LLM
+    overview_chunks: int = 10    # chunks sampled across a document for "what is this about?"
     # Relevance = sigmoid(cross-encoder logit). Calibrated with eval/run_eval.py: the hardest
     # answerable question scores logit -7.0 (digital) / -9.0 (scanned, via OCR), unrelated
     # questions -9.7 or lower. A false "not found" is worse than one extra LLM call, so the

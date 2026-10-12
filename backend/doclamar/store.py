@@ -99,6 +99,30 @@ def fts_query(text: str) -> Optional[str]:
     return " OR ".join(f'"{t}"' for t in tokens[:32])
 
 
+_BACK_MATTER = re.compile(r"\b(references|bibliography|acknowledg\w*|appendix|appendices)\b", re.IGNORECASE)
+
+
+def _evenly(items: list, n: int) -> list:
+    if n >= len(items):
+        return list(items)
+    if n <= 1:
+        return list(items[:n])
+    return [items[round(j * (len(items) - 1) / (n - 1))] for j in range(n)]
+
+
+def _spread(chunks: list, k: int) -> list:
+    """Pick k chunks that cover a document: opening, section starts, then even fill."""
+    body = [c for c in chunks if not (c["section"] and _BACK_MATTER.search(c["section"]))] or chunks
+    if len(body) <= k:
+        return body
+    chosen = {0}
+    starts = [i for i in range(1, len(body)) if body[i]["section"] != body[i - 1]["section"]]
+    chosen.update(_evenly(starts, k - 1))
+    rest = [i for i in range(len(body)) if i not in chosen]
+    chosen.update(_evenly(rest, k - len(chosen)))
+    return [body[i] for i in sorted(chosen)]
+
+
 class Scope:
     """Which files a search may look at: everything under a folder, or specific files."""
 
@@ -344,6 +368,31 @@ class IndexStore:
         with self._db() as conn:
             rows = conn.execute(sql, [match, *params, limit]).fetchall()
         return [(int(r[0]), float(r[1])) for r in rows]
+
+    def overview_chunk_ids(self, scope: Scope, limit: int) -> List[int]:
+        """Chunks that together summarise the scope, in document order.
+
+        Used for "what is this file about?"-style questions, which no single passage
+        answers, so relevance search alone finds nothing. Per document: the opening,
+        the first chunk of each section, then evenly spaced fill; back matter
+        (references, appendices) is skipped. Folders get each file's opening first.
+        """
+        where, params = scope.sql()
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT c.id, c.file_id, c.ordinal, c.section FROM chunks c JOIN files f ON f.id = c.file_id"
+                f" WHERE {where} ORDER BY f.name, c.ordinal", params,
+            ).fetchall()
+        by_file: Dict[int, list] = {}
+        for row in rows:
+            by_file.setdefault(row["file_id"], []).append(row)
+        per_file = max(1, limit // max(len(by_file), 1))
+        picked: list = []
+        for chunks in by_file.values():
+            picked.extend(_spread(chunks, per_file))
+            if len(picked) >= limit:
+                break
+        return [r["id"] for r in picked[:limit]]
 
     def get_chunks(self, chunk_ids: Sequence[int]) -> Dict[int, dict]:
         if not chunk_ids:

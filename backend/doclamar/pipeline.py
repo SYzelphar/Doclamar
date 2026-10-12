@@ -6,9 +6,14 @@
 
 * condense: only for follow-ups in a conversation; turns "what about the second
   one?" into a standalone search query (1 LLM call).
+* retrieve: relevance search, or for "what is this about?"-style questions an
+  overview: passages spread across the document(s) plus any relevant hits. No
+  single passage answers such questions, so relevance search alone finds nothing.
 * rewrite: if nothing relevant came back, reword the query once and retry
   (1 LLM call). Most questions never take this path.
 * generate: one LLM call that answers from numbered excerpts with [n] citations.
+  When chatting with one file it never answers "not found" from scores alone:
+  the user picked the document, so it falls back to an overview of it.
 
 Typical cost: one LLM call per question (was N files + 4 in the old pipeline).
 Nodes return only the keys they change; there is no accumulating reducer on the
@@ -42,6 +47,7 @@ class RAGState(TypedDict, total=False):
     scope: Scope
     search_query: str
     hits: List[Hit]
+    mode: str  # search | overview | fallback
     attempts: int
     answer: str
     citations: List[dict]
@@ -72,6 +78,25 @@ REWRITE_PROMPT = """A search of the user's documents for the question below foun
 Question: {question}
 
 Search query:"""
+
+
+_DOC = r"(?:file|document|doc|pdf|paper|article|book|report|chapter|notes?|text|slides?|thesis)s?"
+_OVERVIEW = re.compile(
+    r"\b(?:summari[sz]e|summary|summarise|overview|tl;?dr|gist|synopsis)\b"
+    r"|\bwhat(?:'s| is| are)\s+(?:this|that|it|the|these|those)\s+(?:" + _DOC + r"\s+)?(?:all\s+)?about\b"
+    r"|\b(?:explain|describe|walk me through)\s+(?:this|the|these|that|my)\s+" + _DOC + r"\b"
+    r"|\btell me about\s+(?:this|the|these|that)\s+" + _DOC + r"\b"
+    r"|\bwhat\s+(?:does|do)\s+(?:this|the|these|that)\s+" + _DOC + r"\s+(?:say|cover|contain|discuss|explain|talk about|deal with)\b"
+    r"|\bwhat(?:'s| is)\s+in\s+(?:this|the|these|that)\s+" + _DOC + r"\b"
+    r"|\b(?:main|key|important|major)\s+(?:points?|ideas?|topics?|takeaways?|themes?|concepts?|findings?|sections?)\b"
+    r"|\b(?:topics|subjects)\s+(?:are\s+)?(?:covered|discussed)\b",
+    re.IGNORECASE,
+)
+
+
+def is_overview_question(question: str) -> bool:
+    """Questions about a whole document rather than a fact inside it."""
+    return bool(_OVERVIEW.search(question))
 
 
 def _clean_query(text: str, fallback: str) -> str:
@@ -154,12 +179,21 @@ def build_pipeline(retriever: Retriever, llm: LLMClient, settings: Settings):
 
     def retrieve(state: RAGState) -> dict:
         t0 = time.time()
-        hits = retriever.search(state["search_query"], state["scope"])
+        scope = state["scope"]
+        if is_overview_question(state["question"]):
+            # Relevant passages first (for "summarise the results"), then a spread of the document(s).
+            matched = [h for h in retriever.search(state["search_query"], scope, top_k=4)
+                       if h.relevance is None or h.relevance >= settings.min_relevance]
+            seen = {h.chunk_id for h in matched}
+            hits = matched + [h for h in retriever.overview(scope) if h.chunk_id not in seen]
+            return {"hits": hits, "mode": "overview", "timings": {"retrieve": round(time.time() - t0, 3)}}
+
+        hits = retriever.search(state["search_query"], scope)
         retry = bool(state.get("attempts"))
         if retry and _top(state.get("hits") or []) > _top(hits):
             hits = state["hits"]  # the rewrite made things worse; keep the first results
         key = "retrieve_retry" if retry else "retrieve"
-        return {"hits": hits, "timings": {key: round(time.time() - t0, 3)}}
+        return {"hits": hits, "mode": "search", "timings": {key: round(time.time() - t0, 3)}}
 
     def rewrite(state: RAGState) -> dict:
         t0 = time.time()
@@ -184,6 +218,11 @@ def build_pipeline(retriever: Retriever, llm: LLMClient, settings: Settings):
     def generate(state: RAGState) -> dict:
         t0 = time.time()
         hits = state.get("hits") or []
+        mode = state.get("mode", "search")
+        scope = state["scope"]
+        if not has_evidence(hits) and scope.files:
+            # Chatting with one document: never answer "not found" from scores alone.
+            hits, mode = retriever.overview(scope), "fallback"
         if not has_evidence(hits):
             return {
                 "status": "not_found",
@@ -202,7 +241,16 @@ def build_pipeline(retriever: Retriever, llm: LLMClient, settings: Settings):
             }
 
         history = state.get("history") or []
-        prompt = f"Excerpts:\n\n{format_excerpts(hits)}\n\n"
+        prompt = ""
+        if mode == "overview":
+            prompt += ("These excerpts are spread across the whole of the document(s) to give an overview"
+                       f"{_folder_note(retriever, scope, hits)}. Use them to describe what the document(s)"
+                       " cover, organised by topic.\n\n")
+        elif mode == "fallback":
+            prompt += ("No passage matched the question closely, so these excerpts are spread across the"
+                       " document. Answer from them if they allow it; otherwise say the document doesn't"
+                       " seem to cover it and mention what it does cover.\n\n")
+        prompt += f"Excerpts:\n\n{format_excerpts(hits)}\n\n"
         if history:
             prompt += f"Conversation so far:\n{_format_history(history)}\n\n"
         prompt += f"Question: {state['question']}"
@@ -219,6 +267,13 @@ def build_pipeline(retriever: Retriever, llm: LLMClient, settings: Settings):
             "citations": citations_for(hits, answer if status == "answered" else ""),
             "timings": {"generate": round(time.time() - t0, 3)},
         }
+
+    def _folder_note(retriever: Retriever, scope: Scope, hits: List[Hit]) -> str:
+        if scope.files:
+            return ""
+        total = len(retriever.store.scope_file_ids(scope))
+        shown = len({h.path for h in hits})
+        return f" (they come from {shown} of the {total} files in the folder)" if total > shown else ""
 
     graph = StateGraph(RAGState)
     graph.add_node("condense", condense)

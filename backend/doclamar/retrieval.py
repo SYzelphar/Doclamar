@@ -80,16 +80,25 @@ class Retriever:
 
         hits = []
         for n, chunk_id in enumerate(pool):
-            row = rows[chunk_id]
             if rerank_scores is not None:
                 score, relevance = rerank_scores[n], _sigmoid(rerank_scores[n])
             else:
                 score, relevance = fused[chunk_id], None
-            hits.append(Hit(
-                chunk_id=chunk_id, path=row["path"], name=row["name"], text=row["text"],
-                section=row["section"], page_start=row["page_start"], page_end=row["page_end"],
-                score=round(score, 4), relevance=relevance,  # unrounded: thresholds go down to 1e-5
-                ocr=bool(row["ocr"]),
-            ))
+            hits.append(_hit(rows[chunk_id], score, relevance))
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:top_k]
+
+    def overview(self, scope: Scope, limit: Optional[int] = None) -> List[Hit]:
+        """Passages spread across the scope's documents, for "what is this about?" questions."""
+        ids = self.store.overview_chunk_ids(scope, limit or self.settings.overview_chunks)
+        rows = self.store.get_chunks(ids)
+        return [_hit(rows[i], 0.0, None) for i in ids if i in rows]
+
+
+def _hit(row: dict, score: float, relevance: Optional[float]) -> Hit:
+    return Hit(
+        chunk_id=row["id"], path=row["path"], name=row["name"], text=row["text"],
+        section=row["section"], page_start=row["page_start"], page_end=row["page_end"],
+        score=round(score, 4), relevance=relevance,  # unrounded: thresholds go down to 1e-5
+        ocr=bool(row["ocr"]),
+    )
