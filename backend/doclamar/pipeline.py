@@ -9,6 +9,8 @@
 * retrieve: relevance search, or for "what is this about?"-style questions an
   overview: passages spread across the document(s) plus any relevant hits. No
   single passage answers such questions, so relevance search alone finds nothing.
+  Questions about a position ("the last page", "page 12", "pages 3 to 5") fetch
+  exactly those pages: semantic search has no notion of page numbers.
 * rewrite: if nothing relevant came back, reword the query once and retry
   (1 LLM call). Most questions never take this path.
 * generate: one LLM call that answers from numbered excerpts with [n] citations.
@@ -47,7 +49,8 @@ class RAGState(TypedDict, total=False):
     scope: Scope
     search_query: str
     hits: List[Hit]
-    mode: str  # search | overview | fallback
+    mode: str  # search | overview | fallback | pages
+    page_info: dict
     attempts: int
     answer: str
     citations: List[dict]
@@ -92,6 +95,47 @@ _OVERVIEW = re.compile(
     r"|\b(?:topics|subjects)\s+(?:are\s+)?(?:covered|discussed)\b",
     re.IGNORECASE,
 )
+
+
+_WORD_NUMBERS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+    "ten": 10, "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7,
+    "eighth": 8, "ninth": 9, "tenth": 10,
+}
+_N = r"(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)"
+_NTH = r"(\d{1,4}(?:st|nd|rd|th)|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)"
+MAX_PAGES_ASKED = 10
+
+
+def _num(token: str) -> int:
+    token = token.lower()
+    return _WORD_NUMBERS.get(token) or int(re.sub(r"\D", "", token))
+
+
+def page_reference(question: str) -> Optional[List[int]]:
+    """Pages a question points at; negative numbers count from the end (-1 = last page)."""
+    q = question.lower()
+    if m := re.search(r"\b(?:last|final)\s+" + _N + r"\s+pages\b", q):
+        n = min(_num(m.group(1)), MAX_PAGES_ASKED)
+        return list(range(-n, 0))
+    if m := re.search(r"\bfirst\s+" + _N + r"\s+pages\b", q):
+        return list(range(1, min(_num(m.group(1)), MAX_PAGES_ASKED) + 1))
+    if m := re.search(r"\b(?:pages?|pp?\.)\s*(\d{1,4})\s*(?:-|–|—|to|through|thru)\s*(?:page\s*)?(\d{1,4})\b", q):
+        a, b = sorted((int(m.group(1)), int(m.group(2))))
+        return list(range(a, min(b, a + MAX_PAGES_ASKED - 1) + 1))
+    if m := re.search(r"\bpages?\s+(\d{1,4})\s*(?:and|&|,)\s*(\d{1,4})\b", q):
+        return sorted({int(m.group(1)), int(m.group(2))})
+    if re.search(r"\b(?:second|2nd)[\s-]+(?:to|from)[\s-]+(?:the[\s-]+)?last\s+page\b|\bpenultimate\s+page\b", q):
+        return [-2]
+    if re.search(r"\b(?:last|final|ending|closing)\s+page\b", q):
+        return [-1]
+    if re.search(r"\b(?:front|cover|title|opening)\s+page\b", q):
+        return [1]
+    if m := re.search(r"\b" + _NTH + r"\s+page\b", q):
+        return [_num(m.group(1))]
+    if m := re.search(r"\b(?:page|pg\.?|p\.)\s*(?:no\.?\s*|number\s*|#\s*)?(\d{1,4})\b", q):
+        return [int(m.group(1))]
+    return None
 
 
 def is_overview_question(question: str) -> bool:
@@ -177,9 +221,23 @@ def build_pipeline(retriever: Retriever, llm: LLMClient, settings: Settings):
                 logger.warning("Condense failed, using the raw question: %s", e)
         return {"search_query": query, "attempts": 0, "timings": {"condense": round(time.time() - t0, 3)}}
 
+    def page_target(scope: Scope, query: str) -> Optional[str]:
+        """Which file a page question is about: the chat's file, or the best match in the folder."""
+        if scope.files:
+            return scope.files[0] if len(scope.files) == 1 else None
+        hits = retriever.search(query, scope, top_k=1)
+        return hits[0].path if hits else None
+
     def retrieve(state: RAGState) -> dict:
         t0 = time.time()
         scope = state["scope"]
+        wanted = page_reference(state["question"]) or page_reference(state["search_query"])
+        target = page_target(scope, state["search_query"]) if wanted else None
+        if target:
+            hits, info = retriever.pages(target, wanted)
+            return {"hits": hits, "mode": "pages", "page_info": info,
+                    "timings": {"retrieve": round(time.time() - t0, 3)}}
+
         if is_overview_question(state["question"]):
             # Relevant passages first (for "summarise the results"), then a spread of the document(s).
             matched = [h for h in retriever.search(state["search_query"], scope, top_k=4)
@@ -209,7 +267,7 @@ def build_pipeline(retriever: Retriever, llm: LLMClient, settings: Settings):
                 "timings": {"rewrite": round(time.time() - t0, 3)}}
 
     def after_retrieve(state: RAGState) -> str:
-        if confident(state.get("hits") or []):
+        if state.get("mode") == "pages" or confident(state.get("hits") or []):
             return "generate"
         if state.get("attempts", 0) < 1 and llm.configured:
             return "rewrite"
@@ -220,6 +278,11 @@ def build_pipeline(retriever: Retriever, llm: LLMClient, settings: Settings):
         hits = state.get("hits") or []
         mode = state.get("mode", "search")
         scope = state["scope"]
+        info = state.get("page_info") or {}
+        if mode == "pages" and info.get("message"):
+            # No such page, or nothing readable on it: say so plainly instead of guessing.
+            return {"status": "answered", "answer": info["message"], "citations": [],
+                    "timings": {"generate": round(time.time() - t0, 3)}}
         if not has_evidence(hits) and scope.files:
             # Chatting with one document: never answer "not found" from scores alone.
             hits, mode = retriever.overview(scope), "fallback"
@@ -242,10 +305,21 @@ def build_pipeline(retriever: Retriever, llm: LLMClient, settings: Settings):
 
         history = state.get("history") or []
         prompt = ""
+        if scope.files and len(scope.files) == 1:
+            row = retriever.store.get_file(scope.files[0])
+            if row:  # lets the model answer "how many pages is it?" too
+                pages = f", {row['num_pages']} pages" if row["num_pages"] else ""
+                prompt += f"Document: {row['name']}{pages}.\n\n"
         if mode == "overview":
             prompt += ("These excerpts are spread across the whole of the document(s) to give an overview"
                        f"{_folder_note(retriever, scope, hits)}. Use them to describe what the document(s)"
                        " cover, organised by topic.\n\n")
+        elif mode == "pages":
+            pages = ", ".join(str(p) for p in info.get("pages", [])) or "the requested part"
+            total = f", which has {info['total']} pages" if info.get("total") else ""
+            prompt += (f"The user is asking about page {pages} of {info.get('file')}{total}. The excerpts"
+                       " below are the text on that page, in order (one may start or end on a neighbouring"
+                       " page). Describe what is on it.\n\n")
         elif mode == "fallback":
             prompt += ("No passage matched the question closely, so these excerpts are spread across the"
                        " document. Answer from them if they allow it; otherwise say the document doesn't"

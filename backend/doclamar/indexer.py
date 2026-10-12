@@ -69,7 +69,7 @@ def embedding_text(path: str, chunk: Chunk) -> str:
 
 
 # Bump when parsing/chunking changes in a way that should rebuild existing indexes.
-PIPELINE_VERSION = "1"
+PIPELINE_VERSION = "2"  # 2: OCR for image-heavy pages and image regions
 
 
 def index_fingerprint(settings: Settings) -> str:

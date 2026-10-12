@@ -18,6 +18,9 @@ INGEST  (background, incremental — only new or changed files are re-read)
         ─► embed (bge-small-en-v1.5, ONNX)  ─►  SQLite: files · chunks + vectors · FTS5 keyword index
 
 QUERY   (LangGraph)
+  "page 12" / "last page"      ─► read exactly those pages
+  "what is this file about?"   ─► passages spread across the document (opening, each section)
+  anything else:
   condense follow-up ─► hybrid search (vector + BM25, fused with RRF, scoped to the folder/file)
                      ─► cross-encoder rerank (ms-marco-MiniLM)
                      ─► nothing relevant? rewrite the query once and search again
@@ -90,10 +93,16 @@ scans and searches offline.
 
 ## OCR
 
-PDF pages that contain images but no text layer, and image files (PNG, JPG, TIFF including
-multi-page, BMP, WebP), are read with [RapidOCR](https://github.com/RapidAI/RapidOCR)
-(PP-OCR models on ONNX Runtime, Apache-2.0). Pages with a real text layer are never OCRed, so
-digital PDFs cost nothing extra.
+Read with [RapidOCR](https://github.com/RapidAI/RapidOCR) (PP-OCR models on ONNX Runtime,
+Apache-2.0):
+
+- PDF pages that are mostly pictures (scans, photographed or handwritten notes), even when a
+  watermark or question number puts a little real text on them;
+- large pictures on otherwise digital pages (diagrams, screenshots): the page keeps its text and
+  the picture regions are read too;
+- image files (PNG, JPG, TIFF including multi-page, BMP, WebP).
+
+Ordinary digital pages are never OCRed, so they cost nothing extra.
 
 - **Reading order:** OCR engines return lines top to bottom, which interleaves the columns of
   a two-column scan. `ocr.py` finds the column gutter (recursively, so 3 columns work), treats

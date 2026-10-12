@@ -394,6 +394,29 @@ class IndexStore:
                 break
         return [r["id"] for r in picked[:limit]]
 
+    def chunk_ids_on_pages(self, path: str, pages: Sequence[int], limit: int) -> List[int]:
+        """Chunks of one file that overlap any of `pages`, in reading order."""
+        if not pages:
+            return []
+        overlap = " OR ".join("(c.page_start <= ? AND c.page_end >= ?)" for _ in pages)
+        params = [path_key(path)] + [p for page in pages for p in (page, page)] + [limit]
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT c.id FROM chunks c JOIN files f ON f.id = c.file_id"
+                f" WHERE f.path_key = ? AND ({overlap}) ORDER BY c.ordinal LIMIT ?", params,
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def edge_chunk_ids(self, path: str, from_end: bool, limit: int) -> List[int]:
+        """First or last chunks of a file without page numbers (Word, text, images)."""
+        order = "DESC" if from_end else "ASC"
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT c.id FROM chunks c JOIN files f ON f.id = c.file_id"
+                f" WHERE f.path_key = ? ORDER BY c.ordinal {order} LIMIT ?", (path_key(path), limit),
+            ).fetchall()
+        return sorted(r[0] for r in rows)
+
     def get_chunks(self, chunk_ids: Sequence[int]) -> Dict[int, dict]:
         if not chunk_ids:
             return {}

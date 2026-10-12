@@ -4,7 +4,7 @@
   "description": "Ask questions about your own documents, locally indexed.",
   "author": "Shlok Salgaonkar",
   "private": true,
-  "version": "3.1.2",
+  "version": "3.1.3",
   "type": "module",
   "main": "main.js",
   "scripts": {

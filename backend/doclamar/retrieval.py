@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import asdict, dataclass
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .config import Settings
 from .embeddings import Embedder, Reranker
@@ -91,6 +92,39 @@ class Retriever:
     def overview(self, scope: Scope, limit: Optional[int] = None) -> List[Hit]:
         """Passages spread across the scope's documents, for "what is this about?" questions."""
         ids = self.store.overview_chunk_ids(scope, limit or self.settings.overview_chunks)
+        return self._hits(ids)
+
+    def pages(self, path: str, wanted: List[int], limit: int = 12) -> Tuple[List[Hit], dict]:
+        """Passages on specific pages. `wanted` may count from the end: -1 is the last page.
+
+        Returns (hits, info); when there is nothing to show, info["message"] says why
+        (no such page, or the page has no readable text).
+        """
+        row = self.store.get_file(path)
+        name = row["name"] if row else os.path.basename(path)
+        total = row["num_pages"] if row else None
+        info = {"file": name, "total": total, "pages": [], "message": None}
+        if total is None:
+            # Word, text and image files have no pages: only "first"/"last" make sense.
+            if all(p < 0 for p in wanted) or all(p == 1 for p in wanted):
+                return self._hits(self.store.edge_chunk_ids(path, from_end=wanted[0] < 0, limit=3)), info
+            info["message"] = f"{name} has no page numbers (only PDFs and multi-page images do)."
+            return [], info
+
+        resolved = sorted({p if p > 0 else total + 1 + p for p in wanted})
+        info["pages"] = [p for p in resolved if 1 <= p <= total]
+        if not info["pages"]:
+            asked = ", ".join(str(p) for p in resolved)
+            info["message"] = f"{name} has {total} page{'s' if total != 1 else ''}, so there is no page {asked}."
+            return [], info
+        hits = self._hits(self.store.chunk_ids_on_pages(path, info["pages"], limit))
+        if not hits:
+            label = ", ".join(str(p) for p in info["pages"])
+            info["message"] = (f"Page {label} of {name} has no readable text: it may be blank, a picture "
+                               "without words, or handwriting OCR couldn't read.")
+        return hits, info
+
+    def _hits(self, ids: List[int]) -> List[Hit]:
         rows = self.store.get_chunks(ids)
         return [_hit(rows[i], 0.0, None) for i in ids if i in rows]
 
