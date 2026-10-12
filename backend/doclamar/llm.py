@@ -101,7 +101,13 @@ class _GroqBackend:
         return response.choices[0].message.content or ""
 
     def check(self) -> None:
-        self.client.models.retrieve(self.config.model)  # validates key + model, costs nothing
+        # Validates key + model and costs nothing. Not models.retrieve(): ids like
+        # "openai/gpt-oss-120b" contain a slash, which breaks that URL and returns 404.
+        available = sorted(m.id for m in self.client.models.list().data)
+        if self.config.model not in available:
+            chat_models = [m for m in available if not any(x in m for x in ("whisper", "guard", "orpheus"))]
+            raise LLMError(f"Groq doesn't offer '{self.config.model}' to this key. "
+                           f"Available: {', '.join(chat_models)}")
 
 
 class _GeminiBackend:
@@ -195,6 +201,8 @@ class LLMClient:
         for attempt in range(self.max_retries + 1):
             try:
                 return fn(*args)
+            except LLMError:
+                raise  # already a user-facing message
             except Exception as e:
                 status = _status_code(e)
                 if status in (401, 403):

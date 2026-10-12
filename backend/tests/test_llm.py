@@ -87,3 +87,20 @@ def test_configure_rejects_unknown_provider_and_empty_key():
     with pytest.raises(LLMError):
         client.configure("groq", "  ", validate=False)
     assert client.configure("groq", "k", validate=False)["model"] == "openai/gpt-oss-120b"
+
+
+def test_groq_key_check_handles_model_ids_with_slashes():
+    # models.retrieve("openai/gpt-oss-120b") 404s because of the slash; the check must not use it.
+    from types import SimpleNamespace
+
+    from doclamar.llm import _GroqBackend
+
+    backend = _GroqBackend.__new__(_GroqBackend)
+    backend.config = LLMConfig("groq", "k", "openai/gpt-oss-120b")
+    listing = [SimpleNamespace(id=i) for i in ("openai/gpt-oss-120b", "qwen/qwen3.8-27b", "whisper-large-v3")]
+    backend.client = SimpleNamespace(models=SimpleNamespace(list=lambda: SimpleNamespace(data=listing)))
+    backend.check()  # does not raise
+
+    backend.config = LLMConfig("groq", "k", "llama-3.3-70b-versatile")  # retired model
+    with pytest.raises(LLMError, match="Available: openai/gpt-oss-120b, qwen/qwen3.8-27b$"):
+        backend.check()
